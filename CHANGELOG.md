@@ -1,5 +1,19 @@
 # querybridge-mcp
 
+## 0.4.1
+
+### Patch Changes
+
+- 3419cc7: **Release plumbing fixes** (no user-facing code change):
+  - `release.yml` accepts `workflow_dispatch` so failed/missed releases can be replayed with `gh workflow run release.yml --ref vX.Y.Z`.
+  - `changeset.yml` now prefers a `CHANGESETS_PAT` secret (fine-grained PAT) over `GITHUB_TOKEN`, so tags it creates fire `release.yml` automatically instead of being silently swallowed by GitHub's anti-loop protection. Falls back to `GITHUB_TOKEN` when the secret is absent (no hard break).
+  - CONTRIBUTING.md documents the required `NPM_TOKEN` and `CHANGESETS_PAT` secrets and the manual-replay command.
+
+- 124fa42: **Release plumbing fix.** Pass `CHANGESETS_PAT` to `actions/checkout` so git operations (the version-bump commit and the release tag push) are attributed to the PAT owner instead of `github-actions[bot]`. Without this, GitHub's anti-loop protection swallows downstream workflow triggers — CI on the version PR and `release.yml` on the release tag both fail to fire. The env-var `GITHUB_TOKEN` override on `changesets/action@v1` only affected its API calls, not the underlying git operations.
+- 335d0b1: - **`--version` / `-v`** now works on both binaries (`querybridge-mcp-server` and `querybridge-mcp`) and short-circuits before config loading — handy for sanity-checking the installed version without setting up a database.
+  - The reported version is read from `package.json` at runtime, so it stays in sync with Changesets bumps automatically (the previous hardcoded `"0.1.3"` string in `src/index.ts` was already stale on 0.4.0).
+  - `release.yml`'s `workflow_dispatch` now takes a required `tag` input. Stuck releases replay with `gh workflow run release.yml --ref main -f tag=vX.Y.Z` instead of needing the operator to push the tag from a non-`GITHUB_TOKEN` session.
+
 ## 0.4.0
 
 ### Minor Changes
