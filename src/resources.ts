@@ -9,7 +9,7 @@ import { qualifiedTable, formatAsTable } from "./helpers.js";
 
 export function registerResources(server: McpServer) {
   // ── Table schema resource ─────────────────────────────────────────
-  server.resource(
+  server.registerResource(
     "table-schema",
     new ResourceTemplate(
       "mysql://{connection}/{database}/{table}/schema",
@@ -58,7 +58,9 @@ export function registerResources(server: McpServer) {
                 args.connection as string,
                 "SHOW DATABASES"
               );
-              return rows.map((r) => Object.values(r)[0]);
+              return rows
+                .map((r) => Object.values(r)[0])
+                .filter((v): v is string => typeof v === "string");
             } catch {
               return [];
             }
@@ -73,7 +75,9 @@ export function registerResources(server: McpServer) {
                  WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE'`,
                 [db]
               );
-              return rows.map((r) => r.TABLE_NAME);
+              return rows
+                .map((r) => r.TABLE_NAME)
+                .filter((v): v is string => typeof v === "string");
             } catch {
               return [];
             }
@@ -81,7 +85,11 @@ export function registerResources(server: McpServer) {
         },
       }
     ),
-    { description: "Schema definition for a MySQL table", mimeType: "text/plain" },
+    {
+      title: "Table schema",
+      description: "Schema definition for a MySQL table",
+      mimeType: "text/plain",
+    },
     async (uri, variables) => {
       const connName = variables.connection as string;
       const db = variables.database as string;
@@ -114,7 +122,7 @@ export function registerResources(server: McpServer) {
   );
 
   // ── Database overview resource ────────────────────────────────────
-  server.resource(
+  server.registerResource(
     "database-overview",
     new ResourceTemplate(
       "mysql://{connection}/{database}/overview",
@@ -149,7 +157,9 @@ export function registerResources(server: McpServer) {
                 args.connection as string,
                 "SHOW DATABASES"
               );
-              return rows.map((r) => Object.values(r)[0]);
+              return rows
+                .map((r) => Object.values(r)[0])
+                .filter((v): v is string => typeof v === "string");
             } catch {
               return [];
             }
@@ -158,6 +168,7 @@ export function registerResources(server: McpServer) {
       }
     ),
     {
+      title: "Database overview",
       description: "Overview of all tables in a MySQL database",
       mimeType: "text/plain",
     },

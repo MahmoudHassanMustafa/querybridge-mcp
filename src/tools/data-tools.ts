@@ -10,15 +10,26 @@ import {
   toolHandler,
 } from "../helpers.js";
 
+const READ_ONLY = {
+  readOnlyHint: true,
+  idempotentHint: true,
+  openWorldHint: true,
+} as const;
+
 export function registerDataTools(server: McpServer) {
   // ── get_table_stats ───────────────────────────────────────────────
-  server.tool(
+  server.registerTool(
     "get_table_stats",
-    "Show table statistics: row counts, data size, index size, auto_increment, timestamps",
     {
-      connection: z.string().describe("Connection name"),
-      database: z.string().optional().describe("Database name"),
-      table: z.string().optional().describe("Table name (omit for all tables)"),
+      title: "Table statistics",
+      description:
+        "Show table statistics: row counts, data size, index size, auto_increment, timestamps",
+      inputSchema: {
+        connection: z.string().describe("Connection name"),
+        database: z.string().optional().describe("Database name"),
+        table: z.string().optional().describe("Table name (omit for all tables)"),
+      },
+      annotations: READ_ONLY,
     },
     toolHandler("get_table_stats", async ({ connection, database, table }) => {
       const r = resolveDb(connection, database);
@@ -47,18 +58,19 @@ export function registerDataTools(server: McpServer) {
       const tables = await queryWithTimeout<Array<Record<string, unknown>>>(
         connection,
         sql,
-        params
+        params,
       );
-      if (tables.length === 0) return toolOk("No tables found");
+      if (tables.length === 0) {
+        return toolOk("No tables found", { database: r.db, tables: [] });
+      }
 
-      // Format sizes for readability
       const formatted = tables.map((t) => ({
         TABLE_NAME: t.TABLE_NAME,
         ROWS: t.TABLE_ROWS,
         DATA_SIZE: humanSize(t.DATA_LENGTH as number),
         INDEX_SIZE: humanSize(t.INDEX_LENGTH as number),
         TOTAL_SIZE: humanSize(
-          ((t.DATA_LENGTH as number) ?? 0) + ((t.INDEX_LENGTH as number) ?? 0)
+          ((t.DATA_LENGTH as number) ?? 0) + ((t.INDEX_LENGTH as number) ?? 0),
         ),
         AUTO_INC: t.AUTO_INCREMENT ?? "N/A",
         ENGINE: t.ENGINE,
@@ -67,25 +79,30 @@ export function registerDataTools(server: McpServer) {
       }));
 
       return toolOk(
-        formatAsTable(formatted) + `\n\n${tables.length} table(s) in ${r.db}`
+        formatAsTable(formatted) + `\n\n${tables.length} table(s) in ${r.db}`,
+        { database: r.db, tables },
       );
-    })
+    }),
   );
 
   // ── sample_data ───────────────────────────────────────────────────
-  server.tool(
+  server.registerTool(
     "sample_data",
-    "Get sample rows from a table for quick preview",
     {
-      connection: z.string().describe("Connection name"),
-      table: z.string().describe("Table name"),
-      database: z.string().optional().describe("Database name"),
-      limit: z
-        .number()
-        .min(1)
-        .max(100)
-        .optional()
-        .describe("Number of rows to return (default: 5, max: 100)"),
+      title: "Sample rows",
+      description: "Get sample rows from a table for quick preview",
+      inputSchema: {
+        connection: z.string().describe("Connection name"),
+        table: z.string().describe("Table name"),
+        database: z.string().optional().describe("Database name"),
+        limit: z
+          .number()
+          .min(1)
+          .max(100)
+          .optional()
+          .describe("Number of rows to return (default: 5, max: 100)"),
+      },
+      annotations: READ_ONLY,
     },
     toolHandler("sample_data", async ({ connection, table, database, limit }) => {
       const r = resolveDb(connection, database);
@@ -96,14 +113,21 @@ export function registerDataTools(server: McpServer) {
       const data = await queryWithTimeout<Array<Record<string, unknown>>>(
         connection,
         `SELECT * FROM ${qt} LIMIT ?`,
-        [n]
+        [n],
       );
 
-      if (data.length === 0) return toolOk(`Table ${table} is empty`);
+      if (data.length === 0) {
+        return toolOk(`Table ${table} is empty`, {
+          database: r.db,
+          table,
+          rows: [],
+        });
+      }
 
       return toolOk(
-        formatAsTable(data) + `\n\n${data.length} row(s) from ${table}`
+        formatAsTable(data) + `\n\n${data.length} row(s) from ${table}`,
+        { database: r.db, table, rows: data },
       );
-    })
+    }),
   );
 }

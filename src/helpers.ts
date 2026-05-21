@@ -55,8 +55,51 @@ export function resolveDb(
 type LogLevel = "info" | "warn" | "error";
 
 /**
- * Stderr-only logger for operator visibility. Never writes to stdout —
- * that stream belongs to the MCP JSON-RPC transport.
+ * Optional MCP server sink. When set, every log() call also emits an
+ * MCP `notifications/message` so the connected client sees server logs
+ * alongside tool results. Stderr output happens regardless — operators
+ * tailing logs and the client both get the line.
+ *
+ * The sink is set once at server startup via `setLogSink(server)`. It
+ * stays `undefined` in tests and for the CLI, which keeps unit tests
+ * decoupled from the MCP SDK.
+ */
+interface LogSink {
+  sendLoggingMessage(params: {
+    level: "debug" | "info" | "notice" | "warning" | "error" | "critical" | "alert" | "emergency";
+    logger?: string;
+    data: unknown;
+  }): Promise<void>;
+}
+
+let logSink: LogSink | undefined;
+let logSinkConnected = false;
+
+export function setLogSink(sink: LogSink): void {
+  logSink = sink;
+}
+
+/**
+ * Mark the sink ready to receive notifications. Called after
+ * `server.connect(transport)` resolves — sending before the transport
+ * is connected throws inside the SDK.
+ */
+export function markLogSinkConnected(): void {
+  logSinkConnected = true;
+}
+
+const LEVEL_TO_MCP = {
+  info: "info",
+  warn: "warning",
+  error: "error",
+} as const;
+
+/**
+ * Logger for operator + client visibility.
+ *  - Always writes to stderr (operators tailing the process see it).
+ *  - When an MCP sink is registered AND connected, also forwards via
+ *    `notifications/message` so the connected client sees it too.
+ * Never writes to stdout — that stream belongs to the MCP JSON-RPC transport.
  */
 export function log(
   level: LogLevel,
@@ -65,6 +108,22 @@ export function log(
 ): void {
   const suffix = ctx ? " " + JSON.stringify(ctx) : "";
   console.error(`[querybridge-mcp] ${level.toUpperCase()} ${msg}${suffix}`);
+
+  if (logSink && logSinkConnected) {
+    // Fire-and-forget — a failed notification must never break the
+    // operation that produced the log. Swallow + report once via stderr.
+    void logSink
+      .sendLoggingMessage({
+        level: LEVEL_TO_MCP[level],
+        logger: "querybridge-mcp",
+        data: ctx ? { msg, ...ctx } : { msg },
+      })
+      .catch((err: unknown) => {
+        console.error(
+          `[querybridge-mcp] ERROR log forwarding failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+  }
 }
 
 // ── SSH host key verification ───────────────────────────────────────
@@ -118,8 +177,23 @@ export function sanitizeErrorMessage(msg: string): string {
 
 // ── Tool response helpers ───────────────────────────────────────────
 
-export function toolOk(text: string) {
-  return { content: [{ type: "text" as const, text }] };
+/**
+ * Wrap a tool response with optional structured content. Clients that
+ * understand the 2024-11 MCP spec (`structuredContent`) render rich
+ * tables/JSON; older ones fall back to the formatted text.
+ */
+export function toolOk(
+  text: string,
+  structuredContent?: Record<string, unknown>,
+) {
+  const result: {
+    content: Array<{ type: "text"; text: string }>;
+    structuredContent?: Record<string, unknown>;
+  } = { content: [{ type: "text" as const, text }] };
+  if (structuredContent !== undefined) {
+    result.structuredContent = structuredContent;
+  }
+  return result;
 }
 
 export function toolError(message: string, hint?: string) {
@@ -142,18 +216,43 @@ type ToolResult = ReturnType<typeof toolOk> | ReturnType<typeof toolError>;
  * with the original MySQL message — which can include 'user'@'host' and
  * internal IPs. Wrap every handler that touches the database.
  */
+/**
+ * Minimal subset of MCP's RequestHandlerExtra we actually consume. Kept
+ * as a structural type so we don't import the SDK into this module — and
+ * marked partial so callers can ignore it.
+ */
+export interface ToolExtra {
+  signal?: AbortSignal;
+}
+
 export function toolHandler<A extends Record<string, unknown>>(
   toolName: string,
-  fn: (args: A) => Promise<ToolResult>,
-): (args: A) => Promise<ToolResult> {
-  return async (args: A) => {
+  fn: (args: A, extra?: ToolExtra) => Promise<ToolResult>,
+): (args: A, extra?: ToolExtra) => Promise<ToolResult> {
+  return async (args: A, extra?: ToolExtra) => {
+    const start = Date.now();
+    const connection =
+      typeof args?.connection === "string" ? args.connection : undefined;
     try {
-      return await fn(args);
+      const result = await fn(args, extra);
+      // Audit log every successful invocation so operators can see what
+      // the LLM is actually doing against their DBs. isError-bearing
+      // results from preconditions (e.g. readonly violation) are logged
+      // as 'warn' to make them grep-able.
+      const isResultError = "isError" in result && result.isError === true;
+      log(isResultError ? "warn" : "info", `${toolName}`, {
+        connection,
+        elapsedMs: Date.now() - start,
+        ...(isResultError ? { rejected: true } : {}),
+      });
+      return result;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      const connection =
-        typeof args?.connection === "string" ? args.connection : undefined;
-      log("warn", `${toolName} failed`, { connection, error: msg });
+      log("warn", `${toolName} failed`, {
+        connection,
+        elapsedMs: Date.now() - start,
+        error: msg,
+      });
       return toolError(`${toolName} failed: ${sanitizeErrorMessage(msg)}`);
     }
   };
@@ -176,11 +275,12 @@ export function formatAsTable(
   rows: Record<string, unknown>[],
   opts?: { maxWidth?: number; maxBytes?: number },
 ): string {
-  if (rows.length === 0) return "(empty)";
+  const firstRow = rows[0];
+  if (firstRow === undefined) return "(empty)";
 
   const maxW = opts?.maxWidth ?? MAX_COL_WIDTH;
   const maxBytes = opts?.maxBytes ?? MAX_OUTPUT_BYTES;
-  const keys = Object.keys(rows[0]);
+  const keys = Object.keys(firstRow);
 
   const truncate = (val: unknown): string => {
     if (val == null) return "NULL";
@@ -212,7 +312,7 @@ export function formatAsTable(
     ),
   );
 
-  const header = keys.map((k, i) => k.padEnd(widths[i])).join(" | ");
+  const header = keys.map((k, i) => k.padEnd(widths[i] ?? 0)).join(" | ");
   const separator = widths.map((w) => "-".repeat(w)).join("-+-");
 
   // Build rows incrementally and stop once we'd exceed the byte budget.
@@ -226,7 +326,7 @@ export function formatAsTable(
   let omitted = 0;
   for (const row of rows) {
     const line = keys
-      .map((k, i) => truncate(row[k]).padEnd(widths[i]))
+      .map((k, i) => truncate(row[k]).padEnd(widths[i] ?? 0))
       .join(" | ");
     const lineBytes = Buffer.byteLength(line, "utf8") + 1;
     if (bytesUsed + lineBytes > maxBytes) {

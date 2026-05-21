@@ -11,6 +11,8 @@ import {
   stripSQLComments,
   sanitizeErrorMessage,
   log,
+  setLogSink,
+  markLogSinkConnected,
   buildHostVerifier,
 } from "../helpers.js";
 import { createHash } from "node:crypto";
@@ -361,6 +363,81 @@ describe("log", () => {
   });
 });
 
+// ── log forwarding via MCP sink ─────────────────────────────────────
+
+describe("log → MCP sink forwarding", () => {
+  let stderrSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    stderrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    stderrSpy.mockRestore();
+    // Reset module-level sink between tests by re-registering a no-op.
+    setLogSink({
+      sendLoggingMessage: () => Promise.resolve(),
+    });
+  });
+
+  it("does not forward when sink is not yet connected", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    setLogSink({ sendLoggingMessage: send });
+    // markLogSinkConnected() intentionally NOT called
+
+    log("info", "hello");
+    // give any potential microtask a tick to flush
+    await Promise.resolve();
+    expect(send).not.toHaveBeenCalled();
+    expect(stderrSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("forwards info → 'info' once connected", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    setLogSink({ sendLoggingMessage: send });
+    markLogSinkConnected();
+
+    log("info", "ready", { connection: "prod" });
+    await Promise.resolve();
+    expect(send).toHaveBeenCalledTimes(1);
+    const call = send.mock.calls[0][0];
+    expect(call.level).toBe("info");
+    expect(call.logger).toBe("querybridge-mcp");
+    expect(call.data).toEqual({ msg: "ready", connection: "prod" });
+  });
+
+  it("maps warn → 'warning' for MCP spec compliance", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    setLogSink({ sendLoggingMessage: send });
+    markLogSinkConnected();
+
+    log("warn", "uh oh");
+    await Promise.resolve();
+    expect(send.mock.calls[0][0].level).toBe("warning");
+  });
+
+  it("maps error → 'error'", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    setLogSink({ sendLoggingMessage: send });
+    markLogSinkConnected();
+
+    log("error", "boom");
+    await Promise.resolve();
+    expect(send.mock.calls[0][0].level).toBe("error");
+  });
+
+  it("never lets a failing sink break the calling code", async () => {
+    const send = vi.fn().mockRejectedValue(new Error("transport closed"));
+    setLogSink({ sendLoggingMessage: send });
+    markLogSinkConnected();
+
+    expect(() => log("info", "hello")).not.toThrow();
+    // The fire-and-forget catch logs the failure as a second stderr line.
+    await new Promise((r) => setTimeout(r, 5));
+    expect(stderrSpy.mock.calls.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
 // ── toolHandler ─────────────────────────────────────────────────────
 
 describe("toolHandler", () => {
@@ -374,21 +451,27 @@ describe("toolHandler", () => {
     stderrSpy.mockRestore();
   });
 
-  it("passes through a successful result", async () => {
+  it("passes through a successful result and audit-logs INFO", async () => {
     const wrapped = toolHandler("demo", async () => toolOk("fine"));
-    const res = await wrapped({});
+    const res = await wrapped({ connection: "prod" });
     expect(res.content[0].text).toBe("fine");
-    expect(stderrSpy).not.toHaveBeenCalled();
+    expect(stderrSpy).toHaveBeenCalledTimes(1);
+    const line = stderrSpy.mock.calls[0][0] as string;
+    expect(line).toMatch(/^\[querybridge-mcp\] INFO demo /);
+    expect(line).toContain('"connection":"prod"');
+    expect(line).toContain('"elapsedMs":');
   });
 
-  it("passes through an early-returned toolError unchanged", async () => {
+  it("passes through an early-returned toolError and audit-logs WARN with rejected:true", async () => {
     const wrapped = toolHandler("demo", async () =>
       toolError("precondition failed"),
     );
     const res = await wrapped({});
     expect(res.content[0].text).toBe("precondition failed");
     expect("isError" in res && res.isError).toBe(true);
-    expect(stderrSpy).not.toHaveBeenCalled();
+    expect(stderrSpy).toHaveBeenCalledTimes(1);
+    expect(stderrSpy.mock.calls[0][0]).toMatch(/^\[querybridge-mcp\] WARN demo /);
+    expect(stderrSpy.mock.calls[0][0]).toContain('"rejected":true');
   });
 
   it("catches throws, logs to stderr, returns sanitized toolError", async () => {

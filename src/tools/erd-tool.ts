@@ -4,22 +4,29 @@ import { queryWithTimeout } from "../connection.js";
 import { resolveDb, toolOk, toolHandler } from "../helpers.js";
 
 export function registerErdTool(server: McpServer) {
-  server.tool(
+  server.registerTool(
     "generate_erd",
-    "Generate a Mermaid ER diagram from the database schema",
     {
-      connection: z.string().describe("Connection name"),
-      database: z.string().optional().describe("Database name"),
-      tables: z
-        .array(z.string())
-        .optional()
-        .describe("Specific tables to include (omit for all tables)"),
+      title: "Generate ER diagram",
+      description: "Generate a Mermaid ER diagram from the database schema",
+      inputSchema: {
+        connection: z.string().describe("Connection name"),
+        database: z.string().optional().describe("Database name"),
+        tables: z
+          .array(z.string())
+          .optional()
+          .describe("Specific tables to include (omit for all tables)"),
+      },
+      annotations: {
+        readOnlyHint: true,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     toolHandler("generate_erd", async ({ connection, database, tables }) => {
       const r = resolveDb(connection, database);
       if ("error" in r) return r.error;
 
-      // Get columns
       let colSql = `
         SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, COLUMN_KEY
         FROM information_schema.COLUMNS
@@ -32,16 +39,19 @@ export function registerErdTool(server: McpServer) {
       }
       colSql += ` ORDER BY TABLE_NAME, ORDINAL_POSITION`;
 
-      const columns = await queryWithTimeout<Array<{
-        TABLE_NAME: string;
-        COLUMN_NAME: string;
-        COLUMN_TYPE: string;
-        COLUMN_KEY: string;
-      }>>(connection, colSql, colParams);
+      const columns = await queryWithTimeout<
+        Array<{
+          TABLE_NAME: string;
+          COLUMN_NAME: string;
+          COLUMN_TYPE: string;
+          COLUMN_KEY: string;
+        }>
+      >(connection, colSql, colParams);
 
-      if (columns.length === 0) return toolOk("No tables found");
+      if (columns.length === 0) {
+        return toolOk("No tables found", { database: r.db, mermaid: "" });
+      }
 
-      // Get foreign keys
       let fkSql = `
         SELECT
           TABLE_NAME,
@@ -58,19 +68,19 @@ export function registerErdTool(server: McpServer) {
         fkParams.push(...tables);
       }
 
-      const foreignKeys = await queryWithTimeout<Array<{
-        TABLE_NAME: string;
-        COLUMN_NAME: string;
-        REFERENCED_TABLE_NAME: string;
-        REFERENCED_COLUMN_NAME: string;
-      }>>(connection, fkSql, fkParams);
+      const foreignKeys = await queryWithTimeout<
+        Array<{
+          TABLE_NAME: string;
+          COLUMN_NAME: string;
+          REFERENCED_TABLE_NAME: string;
+          REFERENCED_COLUMN_NAME: string;
+        }>
+      >(connection, fkSql, fkParams);
 
-      // Build set of FK columns for marking
       const fkColSet = new Set(
-        foreignKeys.map((fk) => `${fk.TABLE_NAME}.${fk.COLUMN_NAME}`)
+        foreignKeys.map((fk) => `${fk.TABLE_NAME}.${fk.COLUMN_NAME}`),
       );
 
-      // Group columns by table
       const tableMap = new Map<
         string,
         Array<{ name: string; type: string; key: string }>
@@ -86,7 +96,6 @@ export function registerErdTool(server: McpServer) {
         });
       }
 
-      // Generate Mermaid
       const lines: string[] = ["erDiagram"];
 
       for (const [tableName, cols] of tableMap) {
@@ -98,34 +107,41 @@ export function registerErdTool(server: McpServer) {
               : fkColSet.has(`${tableName}.${col.name}`)
                 ? " FK"
                 : "";
-          lines.push(
-            `        ${col.type} ${sanitizeName(col.name)}${marker}`
-          );
+          lines.push(`        ${col.type} ${sanitizeName(col.name)}${marker}`);
         }
         lines.push(`    }`);
       }
 
-      // Add relationships
       for (const fk of foreignKeys) {
-        // Only draw relationship if both tables are in our diagram
         if (
           tableMap.has(fk.TABLE_NAME) &&
           tableMap.has(fk.REFERENCED_TABLE_NAME)
         ) {
           lines.push(
-            `    ${sanitizeName(fk.REFERENCED_TABLE_NAME)} ||--o{ ${sanitizeName(fk.TABLE_NAME)} : "${fk.COLUMN_NAME}"`
+            `    ${sanitizeName(fk.REFERENCED_TABLE_NAME)} ||--o{ ${sanitizeName(fk.TABLE_NAME)} : "${fk.COLUMN_NAME}"`,
           );
         }
       }
 
       const mermaid = lines.join("\n");
-      return toolOk("```mermaid\n" + mermaid + "\n```");
-    })
+      return toolOk("```mermaid\n" + mermaid + "\n```", {
+        database: r.db,
+        mermaid,
+        tableCount: tableMap.size,
+        relationshipCount: foreignKeys.filter(
+          (fk) =>
+            tableMap.has(fk.TABLE_NAME) &&
+            tableMap.has(fk.REFERENCED_TABLE_NAME),
+        ).length,
+      });
+    }),
   );
 }
 
 function simplifyType(mysqlType: string): string {
-  const base = mysqlType.split("(")[0].toLowerCase();
+  // split() on a non-empty string always yields at least one element;
+  // the fallback satisfies noUncheckedIndexedAccess.
+  const base = (mysqlType.split("(")[0] ?? mysqlType).toLowerCase();
   const map: Record<string, string> = {
     int: "int",
     bigint: "bigint",
@@ -159,6 +175,5 @@ function simplifyType(mysqlType: string): string {
 }
 
 function sanitizeName(name: string): string {
-  // Mermaid doesn't like special chars in names
   return name.replace(/[^a-zA-Z0-9_]/g, "_");
 }
