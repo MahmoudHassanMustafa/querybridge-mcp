@@ -1,20 +1,24 @@
 name: Release
 
-# Triggered by pushing a git tag like v0.4.0 (created by Changesets'
-# `changeset publish` or manually). Builds, tests, then publishes to npm
-# with Sigstore provenance so consumers can verify the tarball came from
-# this repo + this commit.
-#
-# `workflow_dispatch` exists as an escape hatch — when Changesets pushes a
-# tag using GITHUB_TOKEN, GitHub's anti-loop protection prevents this
-# workflow from firing. Manually trigger via:
-#   gh workflow run release.yml --ref vX.Y.Z
-# or via the Actions tab UI.
+# Triggered by:
+#   - pushing a git tag like v0.4.0 (created by Changesets' `changeset tag`
+#     or manually). Builds, tests, then publishes to npm with Sigstore
+#     provenance so consumers can verify the tarball came from this repo
+#     + this commit.
+#   - workflow_dispatch with a `tag` input — escape hatch for when
+#     Changesets pushed a tag using GITHUB_TOKEN, which GitHub silently
+#     prevents from triggering downstream workflows (anti-loop). Replay:
+#       gh workflow run release.yml --ref main -f tag=vX.Y.Z
 on:
   push:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (e.g. v0.4.0). Must already exist."
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -27,7 +31,11 @@ jobs:
 
     steps:
       - name: Checkout
+        # For tag pushes, checkout the tag (default: github.ref). For
+        # workflow_dispatch, check out the tag the operator passed in.
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - name: Set up pnpm
         # Version comes from package.json `packageManager` field.
@@ -45,8 +53,16 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Verify tag matches package.json
+        # For push events, GITHUB_REF is refs/tags/vX.Y.Z. For
+        # workflow_dispatch, inputs.tag is the user-supplied vX.Y.Z. Strip
+        # the leading "v" either way and compare against package.json.
         run: |
-          TAG="${GITHUB_REF#refs/tags/v}"
+          if [ -n "${{ inputs.tag }}" ]; then
+            TAG="${{ inputs.tag }}"
+            TAG="${TAG#v}"
+          else
+            TAG="${GITHUB_REF#refs/tags/v}"
+          fi
           PKG=$(node -p "require('./package.json').version")
           if [ "$TAG" != "$PKG" ]; then
             echo "Tag v$TAG does not match package.json version $PKG"

@@ -3,6 +3,7 @@
 import { readFileSync, writeFileSync, existsSync, chmodSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { createInterface } from "node:readline";
+import { createRequire } from "node:module";
 import mysql from "mysql2/promise";
 import { ZodError } from "zod";
 import { expandTilde } from "./helpers.js";
@@ -10,6 +11,11 @@ import { createSSHTunnel, closeSSHTunnel } from "./ssh-tunnel.js";
 import type { SSHTunnel } from "./ssh-tunnel.js";
 import { AppConfigSchema, DatabaseConfigSchema, formatZodError } from "./schema.js";
 import type { AppConfig, DatabaseConfig } from "./types.js";
+
+// Read version at runtime so it stays in sync with package.json.
+const VERSION = (
+  createRequire(import.meta.url)("../package.json") as { version: string }
+).version;
 
 // ── Config file resolution ──────────────────────────────────────────
 
@@ -393,7 +399,7 @@ function red(s: string): string {
 
 function printUsage() {
   console.log(`
-  ${bold("querybridge-mcp")} — MySQL MCP Server CLI
+  ${bold("querybridge-mcp")} v${VERSION} — MySQL MCP Server CLI
 
   ${bold("Usage:")}
     querybridge-mcp <command> [options]
@@ -405,6 +411,7 @@ function printUsage() {
     test [name]           Test connection(s)
     init                  Create an empty config file
     serve                 Start the MCP server (default)
+    version, --version    Print version and exit
 
   ${bold("Environment:")}
     QUERYBRIDGE_MCP_CONFIG      Path to config.json (default: ./config.json)
@@ -437,6 +444,11 @@ function run(): Promise<void> | void {
       return cmdTest(args[0]);
     case "init":
       return cmdInit();
+    case "version":
+    case "--version":
+    case "-v":
+      console.log(VERSION);
+      return;
     case "help":
     case "--help":
     case "-h":
