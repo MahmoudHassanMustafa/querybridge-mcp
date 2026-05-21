@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { createRequire } from "node:module";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { loadConfig } from "./config.js";
@@ -8,6 +9,22 @@ import { registerTools } from "./tools/index.js";
 import { registerResources } from "./resources.js";
 import { registerPrompts } from "./prompts.js";
 import { log, setLogSink, markLogSinkConnected } from "./helpers.js";
+
+// Read version at runtime so it stays in sync with package.json (Changesets
+// only bumps package.json, not arbitrary string literals in source).
+const pkg = createRequire(import.meta.url)("../package.json") as {
+  version: string;
+};
+const VERSION = pkg.version;
+
+// Handle --version / -v before doing any work. Lets `querybridge-mcp-server
+// --version` succeed without a configured database. stdout direct write
+// (no console.log) because the no-console lint rule reserves console.* for
+// emergencies — stdout normally belongs to the MCP JSON-RPC transport.
+if (process.argv.slice(2).some((a) => a === "--version" || a === "-v")) {
+  process.stdout.write(VERSION + "\n");
+  process.exit(0);
+}
 
 // Stay alive on background errors. A single unhandled rejection (e.g. a
 // dropped SSH tunnel emitting late, or a pool connection dying between
@@ -31,7 +48,7 @@ async function main() {
   const server = new McpServer(
     {
       name: "querybridge-mcp",
-      version: "0.1.3",
+      version: VERSION,
     },
     {
       // Advertise the `logging` capability so clients know they can

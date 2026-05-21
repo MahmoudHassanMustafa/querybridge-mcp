@@ -91,10 +91,13 @@ access: `querybridge-mcp` only → permissions as above.
 
 ### Manual release (escape hatch)
 
-`release.yml` also accepts `workflow_dispatch`. If a tag exists but
-the release didn't fire (e.g. Changesets pushed it under
-`GITHUB_TOKEN`), trigger manually:
+`release.yml` also accepts `workflow_dispatch` with a required `tag`
+input. If a tag exists but the release didn't fire (e.g. Changesets
+pushed it under `GITHUB_TOKEN`), trigger manually against `main`:
 
 ```bash
-gh workflow run release.yml --ref vX.Y.Z
+gh workflow run release.yml --ref main -f tag=vX.Y.Z
 ```
+
+The workflow checks out the supplied tag and verifies it matches
+`package.json.version` before publishing.
