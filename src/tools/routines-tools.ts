@@ -9,18 +9,28 @@ import {
   toolHandler,
 } from "../helpers.js";
 
+const READ_ONLY = {
+  readOnlyHint: true,
+  idempotentHint: true,
+  openWorldHint: true,
+} as const;
+
 export function registerRoutinesTools(server: McpServer) {
   // ── list_routines ─────────────────────────────────────────────────
-  server.tool(
+  server.registerTool(
     "list_routines",
-    "List stored procedures and/or functions in a database",
     {
-      connection: z.string().describe("Connection name"),
-      database: z.string().optional().describe("Database name"),
-      type: z
-        .enum(["PROCEDURE", "FUNCTION", "ALL"])
-        .optional()
-        .describe("Filter by routine type (default: ALL)"),
+      title: "List routines",
+      description: "List stored procedures and/or functions in a database",
+      inputSchema: {
+        connection: z.string().describe("Connection name"),
+        database: z.string().optional().describe("Database name"),
+        type: z
+          .enum(["PROCEDURE", "FUNCTION", "ALL"])
+          .optional()
+          .describe("Filter by routine type (default: ALL)"),
+      },
+      annotations: READ_ONLY,
     },
     toolHandler("list_routines", async ({ connection, database, type }) => {
       const r = resolveDb(connection, database);
@@ -50,75 +60,94 @@ export function registerRoutinesTools(server: McpServer) {
       const routines = await queryWithTimeout<Array<Record<string, unknown>>>(
         connection,
         sql,
-        params
+        params,
       );
 
       if (routines.length === 0) {
-        return toolOk(`No ${routineType === "ALL" ? "routines" : routineType.toLowerCase() + "s"} found in ${r.db}`);
+        return toolOk(
+          `No ${routineType === "ALL" ? "routines" : routineType.toLowerCase() + "s"} found in ${r.db}`,
+          { database: r.db, type: routineType, routines: [] },
+        );
       }
 
       return toolOk(
-        formatAsTable(routines) +
-          `\n\n${routines.length} routine(s) in ${r.db}`
+        formatAsTable(routines) + `\n\n${routines.length} routine(s) in ${r.db}`,
+        { database: r.db, type: routineType, routines },
       );
-    })
+    }),
   );
 
   // ── get_routine_ddl ───────────────────────────────────────────────
-  server.tool(
+  server.registerTool(
     "get_routine_ddl",
-    "Get the full DDL of a stored procedure or function",
     {
-      connection: z.string().describe("Connection name"),
-      name: z.string().describe("Routine name"),
-      database: z.string().optional().describe("Database name"),
-      type: z
-        .enum(["PROCEDURE", "FUNCTION"])
-        .optional()
-        .describe("Routine type (auto-detected if omitted)"),
+      title: "Get routine DDL",
+      description: "Get the full DDL of a stored procedure or function",
+      inputSchema: {
+        connection: z.string().describe("Connection name"),
+        name: z.string().describe("Routine name"),
+        database: z.string().optional().describe("Database name"),
+        type: z
+          .enum(["PROCEDURE", "FUNCTION"])
+          .optional()
+          .describe("Routine type (auto-detected if omitted)"),
+      },
+      annotations: READ_ONLY,
     },
     toolHandler("get_routine_ddl", async ({ connection, name, database, type }) => {
       const r = resolveDb(connection, database);
       if ("error" in r) return r.error;
 
-      // Auto-detect type if not provided
       let routineType = type;
       if (!routineType) {
         const check = await queryWithTimeout<Array<Record<string, string>>>(
           connection,
           `SELECT ROUTINE_TYPE FROM information_schema.ROUTINES
            WHERE ROUTINE_SCHEMA = ? AND ROUTINE_NAME = ?`,
-          [r.db, name]
+          [r.db, name],
         );
         const found = check[0];
-        if (!found) return toolOk(`Routine "${name}" not found in ${r.db}`);
+        if (!found) {
+          return toolOk(`Routine "${name}" not found in ${r.db}`, {
+            database: r.db,
+            name,
+            found: false,
+          });
+        }
         routineType = found.ROUTINE_TYPE as "PROCEDURE" | "FUNCTION";
       }
 
       const qualifiedName = `${escapeId(r.db)}.${escapeId(name)}`;
       const rows = await queryWithTimeout<Array<Record<string, string>>>(
         connection,
-        `SHOW CREATE ${routineType} ${qualifiedName}`
+        `SHOW CREATE ${routineType} ${qualifiedName}`,
       );
       const row = rows[0];
       const ddlKey =
-        routineType === "PROCEDURE"
-          ? "Create Procedure"
-          : "Create Function";
+        routineType === "PROCEDURE" ? "Create Procedure" : "Create Function";
       const ddl = row?.[ddlKey] ?? "";
 
-      return toolOk(`-- ${routineType}: ${name}\n${ddl}`);
-    })
+      return toolOk(`-- ${routineType}: ${name}\n${ddl}`, {
+        database: r.db,
+        name,
+        type: routineType,
+        ddl,
+      });
+    }),
   );
 
   // ── list_triggers ─────────────────────────────────────────────────
-  server.tool(
+  server.registerTool(
     "list_triggers",
-    "List triggers in a database, optionally filtered by table",
     {
-      connection: z.string().describe("Connection name"),
-      table: z.string().optional().describe("Table name (omit for all triggers)"),
-      database: z.string().optional().describe("Database name"),
+      title: "List triggers",
+      description: "List triggers in a database, optionally filtered by table",
+      inputSchema: {
+        connection: z.string().describe("Connection name"),
+        table: z.string().optional().describe("Table name (omit for all triggers)"),
+        database: z.string().optional().describe("Database name"),
+      },
+      annotations: READ_ONLY,
     },
     toolHandler("list_triggers", async ({ connection, table, database }) => {
       const r = resolveDb(connection, database);
@@ -146,31 +175,35 @@ export function registerRoutinesTools(server: McpServer) {
       const triggers = await queryWithTimeout<Array<Record<string, unknown>>>(
         connection,
         sql,
-        params
+        params,
       );
 
       if (triggers.length === 0) {
         return toolOk(
-          table
-            ? `No triggers on table ${table}`
-            : `No triggers in ${r.db}`
+          table ? `No triggers on table ${table}` : `No triggers in ${r.db}`,
+          { database: r.db, table: table ?? null, triggers: [] },
         );
       }
 
       return toolOk(
-        formatAsTable(triggers) + `\n\n${triggers.length} trigger(s)`
+        formatAsTable(triggers) + `\n\n${triggers.length} trigger(s)`,
+        { database: r.db, table: table ?? null, triggers },
       );
-    })
+    }),
   );
 
   // ── get_trigger_ddl ───────────────────────────────────────────────
-  server.tool(
+  server.registerTool(
     "get_trigger_ddl",
-    "Get the full DDL of a trigger",
     {
-      connection: z.string().describe("Connection name"),
-      name: z.string().describe("Trigger name"),
-      database: z.string().optional().describe("Database name"),
+      title: "Get trigger DDL",
+      description: "Get the full DDL of a trigger",
+      inputSchema: {
+        connection: z.string().describe("Connection name"),
+        name: z.string().describe("Trigger name"),
+        database: z.string().optional().describe("Database name"),
+      },
+      annotations: READ_ONLY,
     },
     toolHandler("get_trigger_ddl", async ({ connection, name, database }) => {
       const r = resolveDb(connection, database);
@@ -179,22 +212,30 @@ export function registerRoutinesTools(server: McpServer) {
       const qualifiedName = `${escapeId(r.db)}.${escapeId(name)}`;
       const rows = await queryWithTimeout<Array<Record<string, string>>>(
         connection,
-        `SHOW CREATE TRIGGER ${qualifiedName}`
+        `SHOW CREATE TRIGGER ${qualifiedName}`,
       );
       const row = rows[0];
       const ddl = row?.["SQL Original Statement"] ?? "";
 
-      return toolOk(`-- TRIGGER: ${name}\n${ddl}`);
-    })
+      return toolOk(`-- TRIGGER: ${name}\n${ddl}`, {
+        database: r.db,
+        name,
+        ddl,
+      });
+    }),
   );
 
   // ── list_events ───────────────────────────────────────────────────
-  server.tool(
+  server.registerTool(
     "list_events",
-    "List scheduled events in a database",
     {
-      connection: z.string().describe("Connection name"),
-      database: z.string().optional().describe("Database name"),
+      title: "List events",
+      description: "List scheduled events in a database",
+      inputSchema: {
+        connection: z.string().describe("Connection name"),
+        database: z.string().optional().describe("Database name"),
+      },
+      annotations: READ_ONLY,
     },
     toolHandler("list_events", async ({ connection, database }) => {
       const r = resolveDb(connection, database);
@@ -215,25 +256,32 @@ export function registerRoutinesTools(server: McpServer) {
         FROM information_schema.EVENTS
         WHERE EVENT_SCHEMA = ?
         ORDER BY EVENT_NAME`,
-        [r.db]
+        [r.db],
       );
 
-      if (events.length === 0) return toolOk(`No events in ${r.db}`);
+      if (events.length === 0) {
+        return toolOk(`No events in ${r.db}`, { database: r.db, events: [] });
+      }
 
       return toolOk(
-        formatAsTable(events) + `\n\n${events.length} event(s)`
+        formatAsTable(events) + `\n\n${events.length} event(s)`,
+        { database: r.db, events },
       );
-    })
+    }),
   );
 
   // ── get_event_ddl ─────────────────────────────────────────────────
-  server.tool(
+  server.registerTool(
     "get_event_ddl",
-    "Get the full DDL of a scheduled event",
     {
-      connection: z.string().describe("Connection name"),
-      name: z.string().describe("Event name"),
-      database: z.string().optional().describe("Database name"),
+      title: "Get event DDL",
+      description: "Get the full DDL of a scheduled event",
+      inputSchema: {
+        connection: z.string().describe("Connection name"),
+        name: z.string().describe("Event name"),
+        database: z.string().optional().describe("Database name"),
+      },
+      annotations: READ_ONLY,
     },
     toolHandler("get_event_ddl", async ({ connection, name, database }) => {
       const r = resolveDb(connection, database);
@@ -242,12 +290,16 @@ export function registerRoutinesTools(server: McpServer) {
       const qualifiedName = `${escapeId(r.db)}.${escapeId(name)}`;
       const rows = await queryWithTimeout<Array<Record<string, string>>>(
         connection,
-        `SHOW CREATE EVENT ${qualifiedName}`
+        `SHOW CREATE EVENT ${qualifiedName}`,
       );
       const row = rows[0];
       const ddl = row?.["Create Event"] ?? "";
 
-      return toolOk(`-- EVENT: ${name}\n${ddl}`);
-    })
+      return toolOk(`-- EVENT: ${name}\n${ddl}`, {
+        database: r.db,
+        name,
+        ddl,
+      });
+    }),
   );
 }

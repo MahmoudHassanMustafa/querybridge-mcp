@@ -3,12 +3,16 @@ import { z } from "zod";
 
 export function registerPrompts(server: McpServer) {
   // ── explore_database ──────────────────────────────────────────────
-  server.prompt(
+  server.registerPrompt(
     "explore_database",
-    "Explore and map out a database: tables, schemas, relationships, ERD",
     {
-      connection: z.string().describe("Connection name"),
-      database: z.string().describe("Database name"),
+      title: "Explore a database",
+      description:
+        "Explore and map out a database: tables, schemas, relationships, ERD",
+      argsSchema: {
+        connection: z.string().describe("Connection name"),
+        database: z.string().describe("Database name"),
+      },
     },
     ({ connection, database }) => ({
       messages: [
@@ -31,16 +35,19 @@ Give me a complete picture of this database.`,
           },
         },
       ],
-    })
+    }),
   );
 
   // ── optimize_query ────────────────────────────────────────────────
-  server.prompt(
+  server.registerPrompt(
     "optimize_query",
-    "Analyze and optimize a SQL query using EXPLAIN and index analysis",
     {
-      connection: z.string().describe("Connection name"),
-      query: z.string().describe("SQL query to optimize"),
+      title: "Optimize a SQL query",
+      description: "Analyze and optimize a SQL query using EXPLAIN and index analysis",
+      argsSchema: {
+        connection: z.string().describe("Connection name"),
+        query: z.string().describe("SQL query to optimize"),
+      },
     },
     ({ connection, query }) => ({
       messages: [
@@ -67,17 +74,22 @@ Follow these steps:
           },
         },
       ],
-    })
+    }),
   );
 
   // ── find_data ─────────────────────────────────────────────────────
-  server.prompt(
+  server.registerPrompt(
     "find_data",
-    "Find specific data by searching column names and sampling tables",
     {
-      connection: z.string().describe("Connection name"),
-      database: z.string().describe("Database name"),
-      description: z.string().describe("Description of what data you're looking for"),
+      title: "Find data",
+      description: "Find specific data by searching column names and sampling tables",
+      argsSchema: {
+        connection: z.string().describe("Connection name"),
+        database: z.string().describe("Database name"),
+        description: z
+          .string()
+          .describe("Description of what data you're looking for"),
+      },
     },
     ({ connection, database, description }) => ({
       messages: [
@@ -98,16 +110,20 @@ Follow these steps:
           },
         },
       ],
-    })
+    }),
   );
 
   // ── audit_schema ──────────────────────────────────────────────────
-  server.prompt(
+  server.registerPrompt(
     "audit_schema",
-    "Audit a database schema for issues: missing indexes, orphan FKs, empty tables, routines",
     {
-      connection: z.string().describe("Connection name"),
-      database: z.string().describe("Database name"),
+      title: "Audit schema",
+      description:
+        "Audit a database schema for issues: missing indexes, orphan FKs, empty tables, routines",
+      argsSchema: {
+        connection: z.string().describe("Connection name"),
+        database: z.string().describe("Database name"),
+      },
     },
     ({ connection, database }) => ({
       messages: [
@@ -135,6 +151,6 @@ Produce a report with:
           },
         },
       ],
-    })
+    }),
   );
 }

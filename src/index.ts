@@ -7,7 +7,7 @@ import { initConnection, closeAll } from "./connection.js";
 import { registerTools } from "./tools/index.js";
 import { registerResources } from "./resources.js";
 import { registerPrompts } from "./prompts.js";
-import { log } from "./helpers.js";
+import { log, setLogSink, markLogSinkConnected } from "./helpers.js";
 
 // Stay alive on background errors. A single unhandled rejection (e.g. a
 // dropped SSH tunnel emitting late, or a pool connection dying between
@@ -28,9 +28,22 @@ process.on("unhandledRejection", (reason) => {
 async function main() {
   const config = loadConfig();
 
-  const server = new McpServer({
-    name: "querybridge-mcp",
-    version: "1.0.0",
+  const server = new McpServer(
+    {
+      name: "querybridge-mcp",
+      version: "0.1.3",
+    },
+    {
+      // Advertise the `logging` capability so clients know they can
+      // expect notifications/message and may issue logging/setLevel.
+      capabilities: { logging: {} },
+    },
+  );
+
+  // Route log() calls through the server as MCP log notifications too.
+  // The sink is invoked only after the transport is connected (below).
+  setLogSink({
+    sendLoggingMessage: (params) => server.server.sendLoggingMessage(params),
   });
 
   registerTools(server);
@@ -71,6 +84,9 @@ async function main() {
   // Start MCP transport
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  // Now that the transport is connected, the log sink can safely forward
+  // notifications. Any log() before this point only writes to stderr.
+  markLogSinkConnected();
   log("info", "server running on stdio");
 }
 

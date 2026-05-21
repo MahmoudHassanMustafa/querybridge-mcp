@@ -37,6 +37,21 @@ they can't be used to hide writes.
 `multipleStatements: false`, so a single tool call cannot execute
 semicolon-chained statements.
 
+**Server-side read-only enforcement.** On every physical connection in
+a `readonly: true` pool, the server runs
+`SET SESSION transaction_read_only = 1, SESSION sql_safe_updates = 1`.
+This is a belt-and-braces complement to the SQL-text whitelist: even if
+the parser is ever fooled into letting a write through, MySQL itself
+rejects it with `ER_CANT_EXECUTE_IN_READ_ONLY_TRANSACTION`, and
+unqualified `UPDATE`/`DELETE` statements (no indexed `WHERE`) are
+refused with `ER_UPDATE_WITHOUT_KEY_IN_SAFE_MODE`.
+
+**LOAD DATA LOCAL INFILE is disabled on every pool.** The MySQL client
+flag `LOCAL_FILES` is dropped from the capability handshake, and the
+`infileStreamFactory` is set to a function that throws. A malicious or
+compromised MySQL server cannot use the well-known `LOCAL INFILE`
+trick to read arbitrary files from the host running the MCP server.
+
 **Parameterized queries.** Tools that accept user data (`execute_query`
 with `params`, `sample_data`, `search_columns`) pass values as bound
 parameters. Table and column names are escaped with MySQL identifier

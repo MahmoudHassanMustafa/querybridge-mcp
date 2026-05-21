@@ -1,0 +1,52 @@
+name: Bug report
+description: Something isn't working as expected
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, what did you see instead?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: querybridge-mcp version
+      placeholder: "0.3.0 (run `querybridge-mcp --version` or check package.json)"
+    validations:
+      required: true
+  - type: input
+    id: node-version
+    attributes:
+      label: Node.js version
+      placeholder: "20.x / 22.x / 24.x"
+    validations:
+      required: true
+  - type: input
+    id: mysql-version
+    attributes:
+      label: MySQL / MariaDB version
+      placeholder: "8.0.36 / MariaDB 11.x"
+  - type: dropdown
+    id: transport
+    attributes:
+      label: How are you running it?
+      options:
+        - Claude Code (claude mcp add)
+        - Other MCP client (specify in description)
+        - Direct stdio
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Connection config (REDACTED)
+      description: Show the shape of your config.json (replace secrets with `***`). Include SSH/SSL sections if relevant.
+      render: json
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant stderr logs
+      description: Paste any `[querybridge-mcp]` lines from stderr.
+      render: shell

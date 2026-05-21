@@ -1,17 +1,15 @@
 import { readFileSync } from "node:fs";
-import { Client as SSHClient } from "ssh2";
 import mysql from "mysql2/promise";
 import type { Pool } from "mysql2/promise";
 import type { DatabaseConfig, SSLConfig } from "./types.js";
-import type { ConnectConfig } from "ssh2";
-import net from "node:net";
-import { log, buildHostVerifier } from "./helpers.js";
+import { log } from "./helpers.js";
+import { createSSHTunnel, closeSSHTunnel } from "./ssh-tunnel.js";
+import type { SSHTunnel } from "./ssh-tunnel.js";
 
 interface ManagedConnection {
   config: DatabaseConfig;
   pool: Pool;
-  sshClient?: SSHClient;
-  localServer?: net.Server;
+  tunnel?: SSHTunnel;
 }
 
 const connections = new Map<string, ManagedConnection>();
@@ -20,30 +18,41 @@ export async function initConnection(config: DatabaseConfig): Promise<void> {
   if (connections.has(config.name)) return;
 
   let mysqlHost = config.host;
-  let mysqlPort = config.port ?? 3306;
-  let sshClient: SSHClient | undefined;
-  let localServer: net.Server | undefined;
+  let mysqlPort = config.port;
+  let tunnel: SSHTunnel | undefined;
 
   if (config.ssh) {
-    const result = await setupSSHTunnel(config);
-    mysqlHost = result.host;
-    mysqlPort = result.port;
-    sshClient = result.sshClient;
-    localServer = result.localServer;
+    tunnel = await createSSHTunnel(config);
+    mysqlHost = tunnel.host;
+    mysqlPort = tunnel.port;
   }
 
+  // Build incrementally so explicit-undefined keys don't break under
+  // exactOptionalPropertyTypes (mysql2 declares password/database as
+  // non-optional in its PoolOptions type).
   const poolOpts: mysql.PoolOptions = {
     host: mysqlHost,
     port: mysqlPort,
     user: config.user,
-    password: config.password,
-    database: config.database || undefined,
     waitForConnections: true,
-    connectionLimit: 5,
+    connectionLimit: config.poolSize,
     queueLimit: 10,
     connectTimeout: 10000,
     multipleStatements: false,
+    // Disable LOAD DATA LOCAL INFILE on every pool. mysql2 ≥ 2.0 already
+    // requires `infileStreamFactory` to opt in, but we drop the
+    // LOCAL_FILES capability flag so the server isn't told we support it,
+    // AND install a factory that throws — three defenses against any
+    // future regression in mysql2's defaults.
+    flags: ["-LOCAL_FILES"],
+    infileStreamFactory: () => {
+      throw new Error(
+        "LOAD DATA LOCAL INFILE is disabled by querybridge-mcp",
+      );
+    },
   };
+  if (config.password !== undefined) poolOpts.password = config.password;
+  if (config.database) poolOpts.database = config.database;
 
   // SSL/TLS support
   if (config.ssl) {
@@ -58,28 +67,79 @@ export async function initConnection(config: DatabaseConfig): Promise<void> {
           { connection: config.name }
         );
       }
-      poolOpts.ssl = {
-        ca: sslCfg.ca ? readFileSync(sslCfg.ca) : undefined,
-        cert: sslCfg.cert ? readFileSync(sslCfg.cert) : undefined,
-        key: sslCfg.key ? readFileSync(sslCfg.key) : undefined,
+      // Build incrementally so we don't emit explicit-undefined keys —
+      // mysql2's SslOptions disallows `undefined` under exactOptionalPropertyTypes.
+      const ssl: Record<string, unknown> = {
         rejectUnauthorized: sslCfg.rejectUnauthorized ?? true,
       };
+      if (sslCfg.ca) ssl.ca = readFileSync(sslCfg.ca);
+      if (sslCfg.cert) ssl.cert = readFileSync(sslCfg.cert);
+      if (sslCfg.key) ssl.key = readFileSync(sslCfg.key);
+      poolOpts.ssl = ssl as NonNullable<mysql.PoolOptions["ssl"]>;
     }
   }
 
   let pool: mysql.Pool;
   try {
     pool = mysql.createPool(poolOpts);
+    hardenSession(pool, config);
     const conn = await pool.getConnection();
     conn.release();
   } catch (err) {
     // Clean up SSH tunnel if pool creation/verification fails
-    localServer?.close();
-    sshClient?.end();
+    if (tunnel) closeSSHTunnel(tunnel);
     throw err;
   }
 
-  connections.set(config.name, { config, pool, sshClient, localServer });
+  const managed: ManagedConnection = { config, pool };
+  if (tunnel) managed.tunnel = tunnel;
+  connections.set(config.name, managed);
+}
+
+/**
+ * Run session-hardening statements on every new physical connection in
+ * the pool. The `connection` event fires synchronously when mysql2 adds
+ * a freshly-opened connection to its internal list — before any caller
+ * issues their first query — so these statements queue ahead of user
+ * work on each connection.
+ *
+ *  - `transaction_read_only` is the SESSION variable (persists for the
+ *    connection's lifetime). Plain `SET TRANSACTION READ ONLY` would
+ *    only apply to the next transaction, so we use the variable form.
+ *  - `sql_safe_updates` blocks UPDATE/DELETE without an indexed WHERE,
+ *    in case the SQL-text whitelist is ever bypassed.
+ *
+ * Only applied to readonly: true connections. Failures are logged but
+ * don't break the pool — they'd typically mean an older MySQL/MariaDB
+ * version that doesn't recognise the variable name.
+ */
+function hardenSession(pool: Pool, config: DatabaseConfig): void {
+  if (!config.readonly) return;
+  pool.on("connection", (conn) => {
+    // mysql2 quirk: the `connection` event always delivers the
+    // callback-style PoolConnection — even when the pool was created
+    // via mysql2/promise. Calling `.query(sql)` without a callback
+    // dispatches the query but logs a "not a promise" misuse warning
+    // to stderr. Use the callback signature explicitly to avoid that
+    // and to actually surface failures.
+    const callbackConn = conn as unknown as {
+      query: (
+        sql: string,
+        cb: (err: Error | null) => void,
+      ) => void;
+    };
+    callbackConn.query(
+      "SET SESSION transaction_read_only = 1, SESSION sql_safe_updates = 1",
+      (err) => {
+        if (err) {
+          log("warn", "failed to apply read-only session hardening", {
+            connection: config.name,
+            error: err.message,
+          });
+        }
+      },
+    );
+  });
 }
 
 export function getPool(name: string): Pool {
@@ -145,157 +205,7 @@ export async function closeAll(): Promise<void> {
         error: err instanceof Error ? err.message : String(err),
       });
     }
-    if (managed.localServer) {
-      managed.localServer.close();
-    }
-    if (managed.sshClient) {
-      managed.sshClient.end();
-    }
+    if (managed.tunnel) closeSSHTunnel(managed.tunnel);
     connections.delete(name);
   }
-}
-
-interface TunnelResult {
-  host: string;
-  port: number;
-  sshClient: SSHClient;
-  localServer: net.Server;
-}
-
-function setupSSHTunnel(config: DatabaseConfig): Promise<TunnelResult> {
-  return new Promise((resolvePromise, rejectPromise) => {
-    const ssh = config.ssh!;
-    const client = new SSHClient();
-    const hostVerifier = buildHostVerifier(ssh.hostFingerprint);
-    let settled = false;
-    let localServerRef: net.Server | undefined;
-
-    if (hostVerifier) {
-      log("info", "SSH host fingerprint verification enabled", {
-        connection: config.name,
-        sshHost: ssh.host,
-      });
-    } else {
-      log(
-        "warn",
-        "SSH host key verification not enforced; set ssh.hostFingerprint to prevent MITM",
-        { connection: config.name, sshHost: ssh.host }
-      );
-    }
-
-    const sshConfig: ConnectConfig = {
-      host: ssh.host,
-      port: ssh.port ?? 22,
-      username: ssh.username,
-      readyTimeout: 10000,
-      // Defaults picked to survive 60-120s bastion idle timeouts during
-      // schema scans. Users can opt out with keepaliveInterval: 0.
-      keepaliveInterval: ssh.keepaliveInterval ?? 30000,
-      keepaliveCountMax: ssh.keepaliveCountMax ?? 3,
-      ...(hostVerifier ? { hostVerifier } : {}),
-    };
-
-    if (ssh.privateKeyPath) {
-      sshConfig.privateKey = readFileSync(ssh.privateKeyPath);
-      if (ssh.passphrase) {
-        sshConfig.passphrase = ssh.passphrase;
-      }
-    } else if (ssh.password) {
-      sshConfig.password = ssh.password;
-    }
-
-    // Persistent listeners — the ssh2 Client can emit 'error' at any time
-    // (keepalive failure, remote disconnect). Without a live listener Node
-    // would crash the process on an unhandled 'error' event after the
-    // initial connect resolved.
-    client.on("error", (err) => {
-      log("warn", "SSH client error", {
-        connection: config.name,
-        error: err.message,
-      });
-      if (!settled) {
-        settled = true;
-        rejectPromise(err);
-      }
-    });
-    client.on("end", () => {
-      log("info", "SSH client disconnected (end)", {
-        connection: config.name,
-      });
-    });
-    client.on("close", () => {
-      log("info", "SSH client closed", { connection: config.name });
-      // Close the local listener so the pool's next getConnection() fails
-      // with ECONNREFUSED instead of hanging on TCP to a port whose
-      // upstream SSH channel is dead. We don't tear down the pool itself —
-      // callers get a clean error and the process keeps running.
-      if (localServerRef?.listening) {
-        localServerRef.close();
-      }
-    });
-
-    client.on("ready", () => {
-      const localServer = net.createServer((sock) => {
-        client.forwardOut(
-          "127.0.0.1",
-          0,
-          config.host,
-          config.port ?? 3306,
-          (err, stream) => {
-            if (err) {
-              log("warn", "SSH forwardOut failed", {
-                connection: config.name,
-                error: err.message,
-              });
-              sock.destroy();
-              return;
-            }
-            sock.pipe(stream).pipe(sock);
-            sock.on("error", (e: Error) => {
-              log("warn", "SSH tunnel local socket error", {
-                connection: config.name,
-                error: e.message,
-              });
-              stream.destroy();
-            });
-            stream.on("error", (e: Error) => {
-              log("warn", "SSH tunnel remote stream error", {
-                connection: config.name,
-                error: e.message,
-              });
-              sock.destroy();
-            });
-          }
-        );
-      });
-
-      localServerRef = localServer;
-
-      // Keep a persistent 'error' listener so late EMFILE/accept failures
-      // don't crash the process.
-      localServer.on("error", (err) => {
-        log("warn", "SSH tunnel localServer error", {
-          connection: config.name,
-          error: err.message,
-        });
-        if (!settled) {
-          settled = true;
-          rejectPromise(err);
-        }
-      });
-
-      localServer.listen(0, "127.0.0.1", () => {
-        const addr = localServer.address() as net.AddressInfo;
-        settled = true;
-        resolvePromise({
-          host: "127.0.0.1",
-          port: addr.port,
-          sshClient: client,
-          localServer,
-        });
-      });
-    });
-
-    client.connect(sshConfig);
-  });
 }

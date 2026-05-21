@@ -6,7 +6,7 @@ A Model Context Protocol (MCP) server that connects Claude Code to MySQL databas
 
 ## Features
 
-- **20 tools** for schema introspection, querying, ERD generation, and programmability
+- **24 tools** for schema introspection, querying, ERD generation, programmability, and operator admin
 - **2 MCP resources** for browsable schema access
 - **4 MCP prompts** for guided database workflows
 - **SSH tunnel support** with password or private key authentication
@@ -149,8 +149,35 @@ MYSQL_CONNECTION_NAME=default
 | `database` | string | | Default database/schema |
 | `readonly` | boolean | `true` | Block write operations |
 | `queryTimeout` | number | `30000` | Query timeout in milliseconds |
+| `poolSize` | number | `5` | mysql2 connection-pool size |
 | `ssh` | object | | SSH tunnel configuration |
 | `ssl` | object or `true` | | SSL/TLS configuration |
+
+### Secrets indirection
+
+`password`, `ssh.password`, and `ssh.passphrase` accept either a plain
+string OR an indirection object so credentials don't need to live in the
+config file:
+
+```json
+{
+  "password": { "env": "PROD_DB_PASSWORD" },
+  "ssh": {
+    "host": "bastion.example.com",
+    "username": "deploy",
+    "passphrase": { "file": "~/.secrets/ssh-passphrase" }
+  }
+}
+```
+
+| Form | Behavior |
+|------|----------|
+| `"secret"` | Plain string (back-compat, fine for dev) |
+| `{ "env": "VAR_NAME" }` | Read from `process.env.VAR_NAME` at startup. Errors if unset or empty. |
+| `{ "file": "/path/to/file" }` | Read file contents (tilde-expanded, trailing whitespace trimmed). |
+
+Resolution happens once at config load; downstream code only sees the
+resolved string.
 
 ### SSH tunnel
 
@@ -264,6 +291,15 @@ Or with custom certificates:
 |------|-------------|
 | `generate_erd` | Generate a Mermaid ER diagram with tables, columns, PKs, FKs, and relationships |
 
+### Operator / admin
+
+| Tool | Description |
+|------|-------------|
+| `list_processes` | Show running connections + their current queries (filter by minimum duration) |
+| `kill_query` | KILL QUERY (or KILL CONNECTION) by process ID. Gated: requires `readonly: false` |
+| `get_unused_indexes` | Detect secondary indexes with zero reads in `performance_schema` and produce DROP statements |
+| `get_charset_collation` | Show character set and collation at database, table, and column levels |
+
 ## Resources
 
 MCP resources let Claude browse schema information without explicit tool calls.
@@ -291,8 +327,14 @@ Prompts appear in the MCP prompt list. Select one and provide the required argum
 ## Safety
 
 - **Read-only by default.** Write queries (INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE) are blocked unless `"readonly": false` is set on the connection.
+- **Server-side read-only enforcement.** Read-only pools also run `SET SESSION transaction_read_only = 1, sql_safe_updates = 1` on every connection, so even a parser bypass is rejected by MySQL itself.
+- **LOAD DATA LOCAL INFILE disabled.** The `LOCAL_FILES` capability is dropped from the client handshake and the `infileStreamFactory` is hard-wired to throw — a malicious MySQL server cannot read files from the MCP host.
 - **Parameterized queries.** The `execute_query` tool uses prepared statements with `?` placeholders to prevent SQL injection.
 - **Result limits.** Unbounded SELECT queries are auto-limited to 1000 rows. Table output is additionally capped at 256KB with a truncation note; individual cell values are truncated at 120 characters.
+- **Cancellable queries.** If the MCP client cancels a request, `execute_query` and `explain_query` issue `KILL QUERY` on a sibling connection so the in-flight statement is stopped at the server, not just abandoned by the client.
+- **Tool annotations.** Every tool advertises MCP `readOnlyHint` / `destructiveHint` / `idempotentHint` so clients (and humans) can gate confirmation prompts appropriately.
+- **Structured results.** Tools return both human-readable text AND `structuredContent` JSON, so clients that support the modern MCP spec can render rich tables instead of monospace ASCII.
+- **Audit logging.** Every tool invocation is logged to stderr with the connection, elapsed ms, and pre-condition rejections — so operators can see exactly what the agent did. Logs are also forwarded to the MCP client via `notifications/message` (per spec) so connected clients see them inline.
 - **Config file in .gitignore.** The `config.json` file containing credentials is excluded from version control.
 
 ## Project structure
@@ -316,10 +358,15 @@ querybridge-mcp/
       data-tools.ts       sample_data, get_table_stats
       routines-tools.ts   list_routines, get_routine_ddl, list_triggers, get_trigger_ddl, list_events, get_event_ddl
       erd-tool.ts         generate_erd
+      admin-tools.ts      list_processes, kill_query, get_unused_indexes, get_charset_collation
   dist/                   Compiled output
   config.json             Your connections (gitignored)
   config.example.json     Example configuration
 ```
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). PRs add a [changeset](https://github.com/changesets/changesets) describing the user-visible effect; releases are automated.
 
 ## License
 
