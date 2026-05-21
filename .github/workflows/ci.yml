@@ -14,6 +14,13 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
 
+    strategy:
+      fail-fast: false
+      matrix:
+        # Node 18 EOL'd 2025-04. Test 20 (active maintenance LTS),
+        # 22 (active LTS), and 24 (current LTS).
+        node-version: [20, 22, 24]
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,16 +31,36 @@ jobs:
           version: 10
           cache: true
 
-      - name: Set up Node.js
+      - name: Set up Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ matrix.node-version }}
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build
-        run: pnpm run build
+      - name: Lint
+        run: pnpm lint
 
-      - name: Test
+      - name: Build
+        run: pnpm build
+
+      - name: Test (unit)
         run: pnpm test
+
+      # Integration tests spin up a real MySQL container — only run on
+      # one Node version since Docker bootstrap is the slow part and
+      # the SDK behavior is identical across Node 20/22/24.
+      - name: Test (integration)
+        if: matrix.node-version == 22
+        run: pnpm test:integration
+
+      # Catches tarball-bloat regressions (the kind that previously
+      # shipped src/__tests__/ to npm). One Node version is enough.
+      - name: Package contents check
+        if: matrix.node-version == 22
+        run: |
+          npm pack --dry-run --json > /tmp/pack.json
+          echo "--- Files that would be published ---"
+          node -e "JSON.parse(require('fs').readFileSync('/tmp/pack.json','utf8'))[0].files.forEach(f => console.log(f.path))"
+          if node -e "const f = JSON.parse(require('fs').readFileSync('/tmp/pack.json','utf8'))[0].files; if (f.some(x => x.path.includes('__tests__'))) { console.error('ERROR: test files would be published'); process.exit(1); } console.log('OK: no test files in tarball');"; then :; fi

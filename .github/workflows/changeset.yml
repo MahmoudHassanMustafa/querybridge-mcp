@@ -1,0 +1,50 @@
+name: Changeset PR
+
+# When pushes land on main with pending changesets, this opens (or
+# updates) a "Version Packages" PR that bumps package.json + writes
+# CHANGELOG.md. Merging that PR creates a git tag, which triggers the
+# release.yml workflow to publish to npm.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Create version PR or push tag
+        uses: changesets/action@v1
+        with:
+          # `version` runs `changeset version`, which applies pending
+          # changesets to package.json + CHANGELOG.md and commits them.
+          version: pnpm changeset version
+          # When the version PR merges, this command runs. It creates
+          # the git tag, which release.yml watches and publishes.
+          publish: pnpm changeset tag
+          commit: "chore: version packages"
+          title: "chore: version packages"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
