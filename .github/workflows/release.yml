@@ -4,10 +4,17 @@ name: Release
 # `changeset publish` or manually). Builds, tests, then publishes to npm
 # with Sigstore provenance so consumers can verify the tarball came from
 # this repo + this commit.
+#
+# `workflow_dispatch` exists as an escape hatch — when Changesets pushes a
+# tag using GITHUB_TOKEN, GitHub's anti-loop protection prevents this
+# workflow from firing. Manually trigger via:
+#   gh workflow run release.yml --ref vX.Y.Z
+# or via the Actions tab UI.
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: read

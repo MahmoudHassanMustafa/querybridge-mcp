@@ -77,3 +77,24 @@ Maintainers don't bump versions manually. The Changesets bot opens a
 PR that bumps `package.json` and writes `CHANGELOG.md`; merging that PR
 creates a tag, which triggers `.github/workflows/release.yml` to publish
 to npm with Sigstore provenance.
+
+### Required repository secrets
+
+| Secret | Used by | Purpose |
+|---|---|---|
+| `NPM_TOKEN` | `release.yml` | npm automation token (Automation type, scoped to `querybridge-mcp`, `Read and write`). |
+| `CHANGESETS_PAT` | `changeset.yml` | Fine-grained PAT with **Contents: read/write** and **Pull requests: read/write** on this repo. Required so tags pushed by Changesets fire `release.yml`. Without it the workflow falls back to `GITHUB_TOKEN`, which works for the PR but cannot trigger downstream workflows (GitHub anti-loop). |
+
+To create `CHANGESETS_PAT`: Settings → Developer settings → Personal
+access tokens → Fine-grained tokens → Generate new token → repository
+access: `querybridge-mcp` only → permissions as above.
+
+### Manual release (escape hatch)
+
+`release.yml` also accepts `workflow_dispatch`. If a tag exists but
+the release didn't fire (e.g. Changesets pushed it under
+`GITHUB_TOKEN`), trigger manually:
+
+```bash
+gh workflow run release.yml --ref vX.Y.Z
+```

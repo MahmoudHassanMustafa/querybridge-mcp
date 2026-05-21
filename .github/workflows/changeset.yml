@@ -47,4 +47,10 @@ jobs:
           commit: "chore: version packages"
           title: "chore: version packages"
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # CHANGESETS_PAT is a fine-grained PAT with contents:write and
+          # pull-requests:write on this repo. Falls back to GITHUB_TOKEN
+          # so the workflow doesn't hard-fail if the secret is missing —
+          # but tags pushed by GITHUB_TOKEN do NOT trigger release.yml
+          # (GitHub anti-loop), so set the PAT secret to make releases
+          # fully automated. See CONTRIBUTING.md.
+          GITHUB_TOKEN: ${{ secrets.CHANGESETS_PAT || secrets.GITHUB_TOKEN }}
