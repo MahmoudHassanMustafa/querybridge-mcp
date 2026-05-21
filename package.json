@@ -1,6 +1,6 @@
 {
   "name": "querybridge-mcp",
-  "version": "0.1.3",
+  "version": "0.4.0",
   "description": "MCP server connecting Claude Code with MySQL — supports SSH tunnels and multiple databases",
   "license": "MIT",
   "author": "Mahmoud Hassan",
