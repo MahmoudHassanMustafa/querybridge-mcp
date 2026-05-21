@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { loadConfig } from "../config.js";
-import { writeFileSync, unlinkSync, mkdirSync } from "node:fs";
+import { writeFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -189,7 +189,7 @@ describe("loadConfig — inline JSON", () => {
       connections: [{ name: "t", user: "u" }],
     });
 
-    expect(() => loadConfig()).toThrow('requires at least "host" and "user"');
+    expect(() => loadConfig()).toThrow(/connections\.0\.host/);
   });
 
   it("rejects missing user", () => {
@@ -197,7 +197,7 @@ describe("loadConfig — inline JSON", () => {
       connections: [{ name: "t", host: "h" }],
     });
 
-    expect(() => loadConfig()).toThrow('requires at least "host" and "user"');
+    expect(() => loadConfig()).toThrow(/connections\.0\.user/);
   });
 
   it("rejects invalid root type", () => {
@@ -302,7 +302,7 @@ describe("loadConfig — inline JSON", () => {
       ],
     });
 
-    expect(() => loadConfig()).toThrow('requires "host" and "username"');
+    expect(() => loadConfig()).toThrow(/connections\.0\.ssh\.host/);
   });
 
   it("auto-generates connection names", () => {
@@ -357,6 +357,119 @@ describe("loadConfig — config file", () => {
 
     const config = loadConfig();
     expect(config.connections[0].host).toBe("file-host");
+  });
+});
+
+// ── Secret indirection ──────────────────────────────────────────────
+
+describe("loadConfig — secret indirection", () => {
+  const tmpSecretFile = join(tmpdir(), `qb-secret-${Date.now()}.txt`);
+
+  afterEach(() => {
+    try {
+      unlinkSync(tmpSecretFile);
+    } catch {
+      // ignore
+    }
+  });
+
+  it("resolves password from { env: 'VAR' }", () => {
+    process.env.MY_DB_PWD = "secret-from-env";
+    process.env.QUERYBRIDGE_MCP_CONFIG_JSON = JSON.stringify({
+      connections: [
+        { name: "t", host: "h", user: "u", password: { env: "MY_DB_PWD" } },
+      ],
+    });
+
+    const config = loadConfig();
+    expect(config.connections[0].password).toBe("secret-from-env");
+    delete process.env.MY_DB_PWD;
+  });
+
+  it("rejects { env: 'VAR' } when the env var is unset", () => {
+    delete process.env.MISSING_PWD;
+    process.env.QUERYBRIDGE_MCP_CONFIG_JSON = JSON.stringify({
+      connections: [
+        { name: "t", host: "h", user: "u", password: { env: "MISSING_PWD" } },
+      ],
+    });
+
+    expect(() => loadConfig()).toThrow(/MISSING_PWD.*unset or empty/);
+  });
+
+  it("rejects { env: 'VAR' } when the env var is empty string", () => {
+    process.env.EMPTY_PWD = "";
+    process.env.QUERYBRIDGE_MCP_CONFIG_JSON = JSON.stringify({
+      connections: [
+        { name: "t", host: "h", user: "u", password: { env: "EMPTY_PWD" } },
+      ],
+    });
+
+    expect(() => loadConfig()).toThrow(/EMPTY_PWD.*unset or empty/);
+    delete process.env.EMPTY_PWD;
+  });
+
+  it("resolves password from { file: '...' } and trims trailing whitespace", () => {
+    writeFileSync(tmpSecretFile, "secret-from-file\n");
+    process.env.QUERYBRIDGE_MCP_CONFIG_JSON = JSON.stringify({
+      connections: [
+        {
+          name: "t",
+          host: "h",
+          user: "u",
+          password: { file: tmpSecretFile },
+        },
+      ],
+    });
+
+    const config = loadConfig();
+    expect(config.connections[0].password).toBe("secret-from-file");
+  });
+
+  it("rejects { file: '...' } when the file is missing", () => {
+    process.env.QUERYBRIDGE_MCP_CONFIG_JSON = JSON.stringify({
+      connections: [
+        {
+          name: "t",
+          host: "h",
+          user: "u",
+          password: { file: "/nonexistent/path/to/secret" },
+        },
+      ],
+    });
+
+    expect(() => loadConfig()).toThrow(/cannot read secret file/);
+  });
+
+  it("resolves ssh.password from { env: 'VAR' }", () => {
+    process.env.SSH_PWD_VAR = "ssh-secret";
+    process.env.QUERYBRIDGE_MCP_CONFIG_JSON = JSON.stringify({
+      connections: [
+        {
+          name: "t",
+          host: "h",
+          user: "u",
+          ssh: {
+            host: "bastion",
+            username: "deploy",
+            password: { env: "SSH_PWD_VAR" },
+          },
+        },
+      ],
+    });
+
+    const config = loadConfig();
+    expect(config.connections[0].ssh!.password).toBe("ssh-secret");
+    delete process.env.SSH_PWD_VAR;
+  });
+
+  it("still accepts plain string password (back-compat)", () => {
+    process.env.QUERYBRIDGE_MCP_CONFIG_JSON = JSON.stringify({
+      connections: [{ name: "t", host: "h", user: "u", password: "plain" }],
+    });
+
+    const config = loadConfig();
+    expect(config.connections[0].password).toBe("plain");
   });
 });
 

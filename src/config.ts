@@ -1,13 +1,19 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { ZodError } from "zod";
 import { expandTilde, log } from "./helpers.js";
-import type { AppConfig, DatabaseConfig, SSLConfig } from "./types.js";
+import { AppConfigSchema, formatZodError } from "./schema.js";
+import type { AppConfig } from "./schema.js";
 
 /**
  * Load configuration from either:
  *  1. QUERYBRIDGE_MCP_CONFIG env var pointing to a JSON file
  *  2. QUERYBRIDGE_MCP_CONFIG_JSON env var containing inline JSON
  *  3. Individual env vars for a single connection (MYSQL_HOST, etc.)
+ *
+ * Every path produces the same raw object shape and is validated against
+ * the same Zod schema, so default-handling and field validation live in
+ * exactly one place.
  *
  * The legacy MYSQL_MCP_CONFIG / MYSQL_MCP_CONFIG_JSON names are still
  * accepted as a fallback and will log a deprecation warning.
@@ -20,7 +26,7 @@ export function loadConfig(): AppConfig {
   );
   if (configPath) {
     const raw = readFileSync(resolve(expandTilde(configPath)), "utf-8");
-    return parseConfig(JSON.parse(raw));
+    return validate(JSON.parse(raw), `file ${configPath}`);
   }
 
   // Option 2: Inline JSON
@@ -29,7 +35,7 @@ export function loadConfig(): AppConfig {
     "MYSQL_MCP_CONFIG_JSON",
   );
   if (configJson) {
-    return parseConfig(JSON.parse(configJson));
+    return validate(JSON.parse(configJson), "inline JSON");
   }
 
   // Option 3: Single connection from env vars
@@ -41,7 +47,30 @@ export function loadConfig(): AppConfig {
     );
   }
 
-  const conn: DatabaseConfig = {
+  return validate(envVarConfig(host), "env vars");
+}
+
+function validate(raw: unknown, source: string): AppConfig {
+  try {
+    return AppConfigSchema.parse(raw);
+  } catch (err) {
+    if (err instanceof ZodError) {
+      throw new Error(
+        `Invalid configuration from ${source}:\n${formatZodError(err)}`,
+        { cause: err },
+      );
+    }
+    throw err;
+  }
+}
+
+/**
+ * Build the raw config object from the single-connection env-var protocol.
+ * Defaults that differ from the schema (e.g. user defaults to "root" here,
+ * but is required in the JSON path) live here, not in the schema.
+ */
+function envVarConfig(host: string): unknown {
+  const conn: Record<string, unknown> = {
     name: process.env.MYSQL_CONNECTION_NAME || "default",
     host,
     port: process.env.MYSQL_PORT ? parseInt(process.env.MYSQL_PORT, 10) : 3306,
@@ -57,16 +86,13 @@ export function loadConfig(): AppConfig {
       : undefined,
   };
 
-  // SSH from env vars
   if (process.env.SSH_HOST) {
     conn.ssh = {
       host: process.env.SSH_HOST,
       port: process.env.SSH_PORT ? parseInt(process.env.SSH_PORT, 10) : 22,
       username: process.env.SSH_USER || process.env.SSH_USERNAME || "root",
       password: process.env.SSH_PASSWORD,
-      privateKeyPath: process.env.SSH_PRIVATE_KEY_PATH
-        ? expandTilde(process.env.SSH_PRIVATE_KEY_PATH)
-        : undefined,
+      privateKeyPath: process.env.SSH_PRIVATE_KEY_PATH,
       passphrase: process.env.SSH_PASSPHRASE,
       hostFingerprint: process.env.SSH_HOST_FINGERPRINT,
       keepaliveInterval: process.env.SSH_KEEPALIVE_INTERVAL
@@ -96,90 +122,4 @@ function readEnvWithFallback(
     return fromLegacy;
   }
   return undefined;
-}
-
-function parseConfig(raw: unknown): AppConfig {
-  if (!raw || typeof raw !== "object") {
-    throw new Error("Invalid config: expected an object");
-  }
-
-  const obj = raw as Record<string, unknown>;
-
-  // Accept either { connections: [...] } or a bare array
-  const arr = Array.isArray(obj.connections)
-    ? obj.connections
-    : Array.isArray(raw)
-      ? (raw as unknown[])
-      : null;
-
-  if (!arr) {
-    throw new Error(
-      'Invalid config: expected { "connections": [...] } or an array',
-    );
-  }
-
-  const connections: DatabaseConfig[] = arr.map((entry: unknown, i: number) => {
-    if (!entry || typeof entry !== "object") {
-      throw new Error(`Invalid connection at index ${i}`);
-    }
-    const e = entry as Record<string, unknown>;
-    if (!e.host || !e.user) {
-      throw new Error(
-        `Connection at index ${i} requires at least "host" and "user"`,
-      );
-    }
-    return {
-      name: (e.name as string) || `connection-${i}`,
-      host: e.host as string,
-      port: (e.port as number) ?? 3306,
-      user: e.user as string,
-      password: e.password as string | undefined,
-      database: e.database as string | undefined,
-      readonly: e.readonly !== false,
-      queryTimeout: (e.queryTimeout as number) ?? undefined,
-      ssh: e.ssh ? parseSSH(e.ssh, i) : undefined,
-      ssl: e.ssl ? parseSSL(e.ssl, i) : undefined,
-    };
-  });
-
-  return { connections };
-}
-
-function parseSSH(raw: unknown, connIndex: number) {
-  if (!raw || typeof raw !== "object") {
-    throw new Error(`Invalid SSH config for connection ${connIndex}`);
-  }
-  const s = raw as Record<string, unknown>;
-  if (!s.host || !s.username) {
-    throw new Error(
-      `SSH config for connection ${connIndex} requires "host" and "username"`,
-    );
-  }
-  return {
-    host: s.host as string,
-    port: (s.port as number) ?? 22,
-    username: s.username as string,
-    password: s.password as string | undefined,
-    privateKeyPath: s.privateKeyPath
-      ? expandTilde(s.privateKeyPath as string)
-      : undefined,
-    passphrase: s.passphrase as string | undefined,
-    hostFingerprint: s.hostFingerprint as string | undefined,
-    keepaliveInterval: s.keepaliveInterval as number | undefined,
-    keepaliveCountMax: s.keepaliveCountMax as number | undefined,
-  };
-}
-
-function parseSSL(raw: unknown, connIndex: number): SSLConfig | boolean {
-  if (raw === true) return true;
-  if (!raw || typeof raw !== "object") {
-    throw new Error(`Invalid SSL config for connection ${connIndex}`);
-  }
-  const s = raw as Record<string, unknown>;
-  return {
-    ca: s.ca ? expandTilde(s.ca as string) : undefined,
-    cert: s.cert ? expandTilde(s.cert as string) : undefined,
-    key: s.key ? expandTilde(s.key as string) : undefined,
-    rejectUnauthorized: (s.rejectUnauthorized as boolean) ?? true,
-  };
 }

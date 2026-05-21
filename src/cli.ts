@@ -3,11 +3,13 @@
 import { readFileSync, writeFileSync, existsSync, chmodSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { createInterface } from "node:readline";
-import { Client as SSHClient } from "ssh2";
 import mysql from "mysql2/promise";
-import net from "node:net";
+import { ZodError } from "zod";
 import { expandTilde } from "./helpers.js";
-import type { AppConfig, DatabaseConfig, SSHConfig } from "./types.js";
+import { createSSHTunnel, closeSSHTunnel } from "./ssh-tunnel.js";
+import type { SSHTunnel } from "./ssh-tunnel.js";
+import { AppConfigSchema, DatabaseConfigSchema, formatZodError } from "./schema.js";
+import type { AppConfig, DatabaseConfig } from "./types.js";
 
 // ── Config file resolution ──────────────────────────────────────────
 
@@ -26,11 +28,25 @@ function loadConfig(path: string): AppConfig {
   if (!existsSync(path)) {
     return { connections: [] };
   }
-  return JSON.parse(readFileSync(path, "utf-8"));
+  const raw = JSON.parse(readFileSync(path, "utf-8"));
+  try {
+    return AppConfigSchema.parse(raw);
+  } catch (err) {
+    if (err instanceof ZodError) {
+      throw new Error(
+        `Invalid configuration in ${path}:\n${formatZodError(err)}`,
+        { cause: err },
+      );
+    }
+    throw err;
+  }
 }
 
 function saveConfig(path: string, config: AppConfig): void {
-  writeFileSync(path, JSON.stringify(config, null, 2) + "\n", {
+  // Validate before writing so a mistake in cmdAdd can't land bad data on
+  // disk that would later fail to load.
+  const validated = AppConfigSchema.parse(config);
+  writeFileSync(path, JSON.stringify(validated, null, 2) + "\n", {
     encoding: "utf-8",
     mode: 0o600,
   });
@@ -126,7 +142,10 @@ async function cmdAdd(name?: string) {
     const database = await ask(rl, "  Default database (optional)");
     const readonly = await askYesNo(rl, "  Read-only?", true);
 
-    const conn: DatabaseConfig = {
+    // Built loose, then normalized through the schema once below so the
+    // saved object always carries defaults (poolSize, etc.) and the
+    // operator sees any validation problems before saving.
+    const rawConn: Record<string, unknown> = {
       name: connName,
       host,
       port,
@@ -144,7 +163,7 @@ async function cmdAdd(name?: string) {
       const sshUsername = await ask(rl, "  SSH username");
       const useKey = await askYesNo(rl, "  Use private key?", true);
 
-      const ssh: SSHConfig = {
+      const ssh: Record<string, unknown> = {
         host: sshHost,
         port: sshPort,
         username: sshUsername,
@@ -160,7 +179,7 @@ async function cmdAdd(name?: string) {
         ssh.password = await ask(rl, "  SSH password");
       }
 
-      conn.ssh = ssh;
+      rawConn.ssh = ssh;
     }
 
     // SSL
@@ -171,15 +190,28 @@ async function cmdAdd(name?: string) {
         const ca = await ask(rl, "  CA cert path (optional)");
         const cert = await ask(rl, "  Client cert path (optional)");
         const key = await ask(rl, "  Client key path (optional)");
-        conn.ssl = {
+        rawConn.ssl = {
           ca: ca ? expandTilde(ca) : undefined,
           cert: cert ? expandTilde(cert) : undefined,
           key: key ? expandTilde(key) : undefined,
           rejectUnauthorized: true,
         };
       } else {
-        conn.ssl = true;
+        rawConn.ssl = true;
       }
+    }
+
+    // Normalize through the schema once — fills defaults (poolSize) and
+    // surfaces validation errors before we attempt the test connection.
+    let conn: DatabaseConfig;
+    try {
+      conn = DatabaseConfigSchema.parse(rawConn);
+    } catch (err) {
+      if (err instanceof ZodError) {
+        console.log(`\n  Invalid connection:\n${formatZodError(err)}`);
+        return;
+      }
+      throw err;
     }
 
     // Test before saving?
@@ -275,18 +307,14 @@ async function testConnection(
   inline = false,
 ): Promise<boolean> {
   let mysqlHost = conn.host;
-  let mysqlPort = conn.port ?? 3306;
-  let sshClient: SSHClient | undefined;
-  let localServer: net.Server | undefined;
+  let mysqlPort = conn.port;
+  let tunnel: SSHTunnel | undefined;
 
   try {
-    // SSH tunnel if needed
     if (conn.ssh) {
-      const tunnel = await setupTestTunnel(conn);
-      mysqlHost = "127.0.0.1";
+      tunnel = await createSSHTunnel(conn);
+      mysqlHost = tunnel.host;
       mysqlPort = tunnel.port;
-      sshClient = tunnel.sshClient;
-      localServer = tunnel.localServer;
       if (!inline) process.stdout.write("  SSH tunnel established... ");
     }
 
@@ -294,22 +322,23 @@ async function testConnection(
       host: mysqlHost,
       port: mysqlPort,
       user: conn.user,
-      password: conn.password,
-      database: conn.database || undefined,
       connectTimeout: 10000,
       connectionLimit: 1,
     };
+    if (conn.password !== undefined) poolOpts.password = conn.password;
+    if (conn.database) poolOpts.database = conn.database;
 
     if (conn.ssl) {
       if (conn.ssl === true) {
         poolOpts.ssl = {};
       } else {
-        poolOpts.ssl = {
-          ca: conn.ssl.ca ? readFileSync(conn.ssl.ca) : undefined,
-          cert: conn.ssl.cert ? readFileSync(conn.ssl.cert) : undefined,
-          key: conn.ssl.key ? readFileSync(conn.ssl.key) : undefined,
+        const ssl: Record<string, unknown> = {
           rejectUnauthorized: conn.ssl.rejectUnauthorized ?? true,
         };
+        if (conn.ssl.ca) ssl.ca = readFileSync(conn.ssl.ca);
+        if (conn.ssl.cert) ssl.cert = readFileSync(conn.ssl.cert);
+        if (conn.ssl.key) ssl.key = readFileSync(conn.ssl.key);
+        poolOpts.ssl = ssl as NonNullable<mysql.PoolOptions["ssl"]>;
       }
     }
 
@@ -344,61 +373,8 @@ async function testConnection(
     }
     return false;
   } finally {
-    if (localServer) localServer.close();
-    if (sshClient) sshClient.end();
+    if (tunnel) closeSSHTunnel(tunnel);
   }
-}
-
-function setupTestTunnel(
-  conn: DatabaseConfig,
-): Promise<{ port: number; sshClient: SSHClient; localServer: net.Server }> {
-  return new Promise((resolve, reject) => {
-    const ssh = conn.ssh!;
-    const client = new SSHClient();
-
-    const config: Record<string, unknown> = {
-      host: ssh.host,
-      port: ssh.port ?? 22,
-      username: ssh.username,
-      readyTimeout: 10000,
-    };
-
-    if (ssh.privateKeyPath) {
-      config.privateKey = readFileSync(ssh.privateKeyPath);
-      if (ssh.passphrase) config.passphrase = ssh.passphrase;
-    } else if (ssh.password) {
-      config.password = ssh.password;
-    }
-
-    client.on("error", reject);
-    client.on("ready", () => {
-      const server = net.createServer((sock) => {
-        client.forwardOut(
-          "127.0.0.1",
-          0,
-          conn.host,
-          conn.port ?? 3306,
-          (err, stream) => {
-            if (err) {
-              sock.destroy();
-              return;
-            }
-            sock.pipe(stream).pipe(sock);
-            sock.on("error", () => stream.destroy());
-            stream.on("error", () => sock.destroy());
-          },
-        );
-      });
-
-      server.listen(0, "127.0.0.1", () => {
-        const addr = server.address() as net.AddressInfo;
-        resolve({ port: addr.port, sshClient: client, localServer: server });
-      });
-      server.on("error", reject);
-    });
-
-    client.connect(config as any);
-  });
 }
 
 // ── Terminal colors ─────────────────────────────────────────────────
