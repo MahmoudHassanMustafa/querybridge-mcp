@@ -31,7 +31,7 @@ async function main() {
   const server = new McpServer(
     {
       name: "querybridge-mcp",
-      version: "0.4.0",
+      version: "0.1.3",
     },
     {
       // Advertise the `logging` capability so clients know they can
