@@ -27,8 +27,8 @@ jobs:
 
       - name: Set up pnpm
         # Version comes from package.json `packageManager` field — do not
-        # specify here, pnpm/action-setup@v4 errors on duplicate sources.
-        uses: pnpm/action-setup@v4
+        # specify here, pnpm/action-setup@v6 errors on duplicate sources.
+        uses: pnpm/action-setup@v6
         with:
           cache: true
 
