@@ -33,7 +33,7 @@ jobs:
       - name: Checkout
         # For tag pushes, checkout the tag (default: github.ref). For
         # workflow_dispatch, check out the tag the operator passed in.
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ inputs.tag || github.ref }}
 
