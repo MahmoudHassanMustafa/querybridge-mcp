@@ -170,7 +170,10 @@ export function toolHandler<A extends Record<string, unknown>>(
       try {
         const result = await fn(args, extra);
         const isResultError = "isError" in result && result.isError === true;
-        log(isResultError ? "warn" : "info", `${toolName}`, {
+        // toolName is in ambient context via runWithContext above, so
+        // the merged log line already includes it as a separate field.
+        // No need to interpolate it into the msg.
+        log(isResultError ? "warn" : "info", "tool invoked", {
           connection,
           elapsedMs: Date.now() - start,
           ...(isResultError ? { rejected: true } : {}),
@@ -184,7 +187,7 @@ export function toolHandler<A extends Record<string, unknown>>(
         // grep for "code=READ_ONLY_VIOLATION" instead of fragile message
         // substrings.
         if (err instanceof QueryBridgeError) {
-          log("warn", `${toolName} rejected`, {
+          log("warn", "tool rejected", {
             connection,
             elapsedMs: Date.now() - start,
             code: err.code,
@@ -192,7 +195,7 @@ export function toolHandler<A extends Record<string, unknown>>(
           return toolError(err.message, err.hint);
         }
 
-        log("warn", `${toolName} failed`, {
+        log("warn", "tool failed", {
           connection,
           elapsedMs: Date.now() - start,
           error: msg,

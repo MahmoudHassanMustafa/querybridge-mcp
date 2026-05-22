@@ -86,6 +86,10 @@ export function registerDataTools(server: McpServer) {
       if ("error" in r) return r.error;
       const n = limit ?? 5;
 
+      // sample_data deliberately returns rows of an unknown schema —
+      // the whole point is to preview an arbitrary user table. The
+      // concrete-row-type rule (§4.2) doesn't apply here.
+      // eslint-disable-next-line local/no-record-unknown-query-result
       const data = await queryWithTimeout<Array<Record<string, unknown>>>(
         connection,
         `SELECT * FROM ${qualifiedTable(r.db, table)} LIMIT ?`,

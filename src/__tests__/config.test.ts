@@ -503,9 +503,14 @@ describe("loadConfig — legacy env var fallback", () => {
 
     const config = loadConfig();
     expect(config.connections[0].name).toBe("legacy");
+    // Deprecation: stable message + legacy var name in JSON ctx.
     const warnings = (stderrSpy.mock.calls as unknown[][])
       .map((c) => c[0] as string)
-      .filter((m) => m.includes("MYSQL_MCP_CONFIG is deprecated"));
+      .filter(
+        (m) =>
+          m.includes("deprecated env var") &&
+          m.includes('"legacy":"MYSQL_MCP_CONFIG"'),
+      );
     expect(warnings).toHaveLength(1);
   });
 
@@ -518,7 +523,11 @@ describe("loadConfig — legacy env var fallback", () => {
     expect(config.connections[0].name).toBe("legacy-inline");
     const warnings = (stderrSpy.mock.calls as unknown[][])
       .map((c) => c[0] as string)
-      .filter((m) => m.includes("MYSQL_MCP_CONFIG_JSON is deprecated"));
+      .filter(
+        (m) =>
+          m.includes("deprecated env var") &&
+          m.includes('"legacy":"MYSQL_MCP_CONFIG_JSON"'),
+      );
     expect(warnings).toHaveLength(1);
   });
 

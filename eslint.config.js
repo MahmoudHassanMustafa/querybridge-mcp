@@ -2,6 +2,7 @@
 import eslint from "@eslint/js";
 import tseslint from "typescript-eslint";
 import globals from "globals";
+import localPlugin from "./eslint-plugins/local.js";
 
 export default tseslint.config(
   {
@@ -17,7 +18,15 @@ export default tseslint.config(
         ...globals.node,
       },
     },
+    plugins: {
+      local: localPlugin,
+    },
     rules: {
+      // In-project rules — CONVENTIONS.md §4.2 and §5.1. Implementations
+      // are in ./eslint-plugins/local.js; the rationale lives there.
+      "local/no-record-unknown-query-result": "error",
+      "local/log-message-no-interpolation": "error",
+
       // Project conventions: stderr-only logging, MCP transport on stdout.
       // Business code uses log(), never console.*. Overrides below allow
       // it in the two files that legitimately need it: log.ts (the logger

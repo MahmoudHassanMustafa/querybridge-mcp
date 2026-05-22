@@ -116,10 +116,10 @@ function readEnvWithFallback(
   if (fromCurrent) return fromCurrent;
   const fromLegacy = process.env[legacy];
   if (fromLegacy) {
-    log(
-      "warn",
-      `${legacy} is deprecated, rename it to ${current}. Support will be removed in a future release.`,
-    );
+    log("warn", "deprecated env var — rename and support will be removed", {
+      legacy,
+      current,
+    });
     return fromLegacy;
   }
   return undefined;

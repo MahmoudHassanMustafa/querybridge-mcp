@@ -44,7 +44,7 @@ export async function withCancellableQuery(
     try {
       const killer = await withTransientRetry(
         () => pool.getConnection(),
-        { connection: opts.connection, operation: `${opts.toolName} kill-channel` },
+        { connection: opts.connection, operation: "kill-channel" },
       );
       try {
         // connectionId comes from `SELECT CONNECTION_ID()` on the same
@@ -53,7 +53,9 @@ export async function withCancellableQuery(
         // interpolation is the only option.
         // eslint-disable-next-line no-restricted-syntax
         await killer.query(`KILL QUERY ${connectionId}`);
-        log("info", `${opts.toolName} cancelled by client`, {
+        // toolName is in ambient context via toolHandler's
+        // runWithContext, so the merged log line already shows it.
+        log("info", "cancelled by client", {
           connection: opts.connection,
           connectionId,
         });
@@ -61,7 +63,7 @@ export async function withCancellableQuery(
         killer.release();
       }
     } catch (err) {
-      log("warn", `${opts.toolName} KILL failed`, {
+      log("warn", "KILL failed", {
         connection: opts.connection,
         connectionId,
         error: err instanceof Error ? err.message : String(err),
@@ -78,7 +80,7 @@ export async function withCancellableQuery(
     // socket-level acquisition is not.
     worker = await withTransientRetry(() => pool.getConnection(), {
       connection: opts.connection,
-      operation: `${opts.toolName} pool.getConnection`,
+      operation: "pool.getConnection",
     });
     const [idRows] = await worker.query("SELECT CONNECTION_ID() AS id");
     connectionId = (idRows as Array<{ id: number }>)[0]?.id;
