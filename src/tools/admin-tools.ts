@@ -14,6 +14,7 @@ import {
   READ_ONLY_TOOL_ANNOTATIONS,
 } from "../tool-runtime.js";
 import { ReadOnlyViolation } from "../errors.js";
+import { raw, sql } from "../sql/template.js";
 
 // ── Handlers (exported for unit tests) ───────────────────────────
 
@@ -58,14 +59,17 @@ export const handleKillQuery = toolHandler(
       );
     }
 
+    // KILL does not accept ? placeholders, so the thread id has to be
+    // inlined. `raw()` runtime-checks it's a finite integer (the Zod
+    // schema also validates positive int — this is belt-and-suspenders).
+    // Two branches keep the variant keyword as a literal in the SQL
+    // template rather than threading it through a value-position helper.
+    const truncated = Math.trunc(processId);
+    const killQuery = killConnection
+      ? sql`KILL CONNECTION ${raw(truncated)}`
+      : sql`KILL QUERY ${raw(truncated)}`;
     const variant = killConnection ? "CONNECTION" : "QUERY";
-    // Process IDs come from MySQL itself; we still bound the value
-    // (z.number().int().positive() validated) and Math.trunc it.
-    // KILL does not accept ? placeholders so direct interpolation
-    // is unavoidable.
-    // eslint-disable-next-line no-restricted-syntax
-    const killStatement = `KILL ${variant} ${Math.trunc(processId)}`;
-    await queryWithTimeout(connection, killStatement);
+    await queryWithTimeout(connection, killQuery.sql, killQuery.values);
 
     // User-facing confirmation message, not executed SQL — but
     // the lint rule's template-literal pattern matches anyway.

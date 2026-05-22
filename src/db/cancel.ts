@@ -2,6 +2,7 @@ import type { Pool, PoolConnection } from "mysql2/promise";
 import { log } from "../log.js";
 import { toolError, type ToolResult } from "../tool-runtime.js";
 import { CancelledByClient } from "../errors.js";
+import { raw, sql } from "../sql/template.js";
 import { withTransientRetry } from "./retry.js";
 
 /**
@@ -47,12 +48,11 @@ export async function withCancellableQuery(
         { connection: opts.connection, operation: "kill-channel" },
       );
       try {
-        // connectionId comes from `SELECT CONNECTION_ID()` on the same
-        // pool a few statements earlier — MySQL guarantees a positive
-        // integer. KILL does not accept a `?` placeholder, so direct
-        // interpolation is the only option.
-        // eslint-disable-next-line no-restricted-syntax
-        await killer.query(`KILL QUERY ${connectionId}`);
+        // KILL does not accept a `?` placeholder for the thread id;
+        // the value has to be inlined. `raw()` enforces it's a finite
+        // integer at runtime — connectionId already comes from MySQL's
+        // own `SELECT CONNECTION_ID()` so this is belt-and-suspenders.
+        await killer.query(sql`KILL QUERY ${raw(connectionId)}`);
         // toolName is in ambient context via toolHandler's
         // runWithContext, so the merged log line already shows it.
         log("info", "cancelled by client", {

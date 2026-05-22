@@ -1,5 +1,6 @@
 import { queryWithTimeout } from "../connection.js";
 import { qualifiedTable, escapeId } from "../sql/identifiers.js";
+import { id, sql } from "../sql/template.js";
 
 /**
  * `information_schema` and `SHOW`-family queries every tool can call.
@@ -407,13 +408,18 @@ export async function getRoutineDdl(
   type: "PROCEDURE" | "FUNCTION",
   name: string,
 ): Promise<string> {
+  // MySQL refuses `?` placeholders for the routine kind, so the
+  // literal `PROCEDURE` / `FUNCTION` keyword has to live in the SQL
+  // template. Two branches keep that explicit; `id()` handles the
+  // db/name escaping.
+  const q =
+    type === "PROCEDURE"
+      ? sql`SHOW CREATE PROCEDURE ${id(db)}.${id(name)}`
+      : sql`SHOW CREATE FUNCTION ${id(db)}.${id(name)}`;
   const rows = await queryWithTimeout<Array<Record<string, string>>>(
     connection,
-    // `type` is a TypeScript literal-union "PROCEDURE" | "FUNCTION";
-    // MySQL refuses `?` placeholders for the routine kind, so direct
-    // interpolation is unavoidable. db/name go through escapeId.
-    // eslint-disable-next-line no-restricted-syntax
-    `SHOW CREATE ${type} ${escapeId(db)}.${escapeId(name)}`,
+    q.sql,
+    q.values,
   );
   const key = type === "PROCEDURE" ? "Create Procedure" : "Create Function";
   return rows[0]?.[key] ?? "";
