@@ -223,6 +223,49 @@ type ToolResult = ReturnType<typeof toolOk> | ReturnType<typeof toolError>;
  */
 export interface ToolExtra {
   signal?: AbortSignal;
+  /**
+   * The original request's _meta; carries progressToken when the client
+   * opted in. Property values are explicitly `| undefined` to satisfy
+   * exactOptionalPropertyTypes when the SDK passes its own RequestMeta
+   * shape through.
+   */
+  _meta?: {
+    progressToken?: string | number | undefined;
+  } & Record<string, unknown>;
+  /**
+   * Send a notification (e.g. notifications/progress) back to the client
+   * mid-call. The parameter is typed as `any` because the SDK's
+   * concrete signature is a narrow discriminated union of ServerNotification
+   * shapes that we don't want to mirror in this structural type.
+   * Construction happens in emitProgress() — that's the single trusted
+   * call site.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  sendNotification?: (notification: any) => Promise<void>;
+}
+
+/**
+ * Emit a progress notification if the client opted in by passing a
+ * progressToken with the request. No-ops otherwise — clients that didn't
+ * ask won't be spammed and we won't fail when the SDK plumbing is absent
+ * (e.g. in tests).
+ */
+export async function emitProgress(
+  extra: ToolExtra | undefined,
+  progress: number,
+  total: number,
+  message?: string,
+): Promise<void> {
+  const token = extra?._meta?.progressToken;
+  if (token === undefined || !extra?.sendNotification) return;
+  try {
+    await extra.sendNotification({
+      method: "notifications/progress",
+      params: { progressToken: token, progress, total, ...(message ? { message } : {}) },
+    });
+  } catch {
+    // Progress notifications are best-effort; never break the call over one.
+  }
 }
 
 export function toolHandler<A extends Record<string, unknown>>(
