@@ -16,6 +16,16 @@
  * actually run somewhere to be introspectable. In CI this is typically
  * a fresh MySQL service container; in dev it's a local sandbox.
  *
+ * Privilege scoping: temp DBs always live under the `_qbmcp_check_*`
+ * prefix (see `newTempDbName` below), so the scratch user should be
+ * narrowed to just that namespace — never `*.*`. The minimum grant is:
+ *
+ *   GRANT CREATE, DROP, ALL PRIVILEGES ON `_qbmcp_check_%`.*
+ *     TO '<scratch_user>'@'<host>';
+ *
+ * The full hardening recipe lives in SECURITY.md under "Security
+ * Considerations for Operators".
+ *
  * V1 limitations:
  *
  *   - **No DELIMITER support.** Stored routines / triggers in the
@@ -79,7 +89,11 @@ export async function validateSchemaPath(raw: string): Promise<PathValidation> {
     return { ok: false, resolved: "", reason: "schema_path is required." };
   }
   if (raw.includes("\0")) {
-    return { ok: false, resolved: "", reason: "schema_path contains a null byte." };
+    return {
+      ok: false,
+      resolved: "",
+      reason: "schema_path contains a null byte.",
+    };
   }
   const resolved = path.resolve(raw);
   for (const forbidden of FORBIDDEN_READ_PREFIXES) {
@@ -102,7 +116,11 @@ export async function validateSchemaPath(raw: string): Promise<PathValidation> {
     };
   }
   if (!info.isFile()) {
-    return { ok: false, resolved, reason: "schema_path is not a regular file." };
+    return {
+      ok: false,
+      resolved,
+      reason: "schema_path is not a regular file.",
+    };
   }
   if (info.size > MAX_SCHEMA_FILE_BYTES) {
     return {

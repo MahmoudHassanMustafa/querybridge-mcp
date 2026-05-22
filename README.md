@@ -47,17 +47,17 @@ The MCP client speaks JSON-RPC over the server's stdin/stdout. Each configured c
 
 There are several MCP-over-MySQL options. The honest pitch:
 
-| Capability | `querybridge-mcp` | Typical alternative |
-|---|---|---|
-| Read-only by default (whitelist + server-side `SET SESSION transaction_read_only`) | ✅ | Usually whitelist only, or off by default |
-| `LOAD DATA LOCAL INFILE` blocked client-side | ✅ | Rarely addressed |
-| SSH tunnel built in (with host-fingerprint pinning) | ✅ | Often requires an external `ssh -L` |
-| Secrets indirection (`{ env: }` / `{ file: }`) | ✅ | Usually plaintext in config |
-| Cancellation via MCP signal → `KILL QUERY` | ✅ | Typically abandoned client-side |
-| Cross-database schema diff (`compare_schemas`) | ✅ | Rare |
-| Multi-arch Docker image with SBOM + Sigstore provenance | ✅ | Sometimes one platform only |
-| Integration tests against real MySQL (Testcontainers) | ✅ | Often unit tests only |
-| Tool annotations + `structuredContent` (modern MCP spec) | ✅ | Many still on the legacy `server.tool()` API |
+| Capability                                                                         | `querybridge-mcp` | Typical alternative                          |
+| ---------------------------------------------------------------------------------- | ----------------- | -------------------------------------------- |
+| Read-only by default (whitelist + server-side `SET SESSION transaction_read_only`) | ✅                | Usually whitelist only, or off by default    |
+| `LOAD DATA LOCAL INFILE` blocked client-side                                       | ✅                | Rarely addressed                             |
+| SSH tunnel built in (with host-fingerprint pinning)                                | ✅                | Often requires an external `ssh -L`          |
+| Secrets indirection (`{ env: }` / `{ file: }`)                                     | ✅                | Usually plaintext in config                  |
+| Cancellation via MCP signal → `KILL QUERY`                                         | ✅                | Typically abandoned client-side              |
+| Cross-database schema diff (`compare_schemas`)                                     | ✅                | Rare                                         |
+| Multi-arch Docker image with SBOM + Sigstore provenance                            | ✅                | Sometimes one platform only                  |
+| Integration tests against real MySQL (Testcontainers)                              | ✅                | Often unit tests only                        |
+| Tool annotations + `structuredContent` (modern MCP spec)                           | ✅                | Many still on the legacy `server.tool()` API |
 
 If you need write access for migrations, raw replication setup, or admin operations beyond `KILL QUERY`, you may want a tool with looser defaults. querybridge-mcp leans hard on "give Claude a database without giving it the ability to destroy your data."
 
@@ -133,9 +133,13 @@ Or manually in `~/.claude.json`:
       "type": "stdio",
       "command": "docker",
       "args": [
-        "run", "--rm", "-i",
-        "-v", "/path/to/config.json:/config/config.json:ro",
-        "-e", "QUERYBRIDGE_MCP_CONFIG=/config/config.json",
+        "run",
+        "--rm",
+        "-i",
+        "-v",
+        "/path/to/config.json:/config/config.json:ro",
+        "-e",
+        "QUERYBRIDGE_MCP_CONFIG=/config/config.json",
         "ghcr.io/mahmoudhassanmustafa/querybridge-mcp:latest"
       ]
     }
@@ -144,6 +148,7 @@ Or manually in `~/.claude.json`:
 ```
 
 Notes:
+
 - `--rm -i` is required — `-i` wires stdio (the MCP transport); `--rm` cleans up the container after the client disconnects.
 - For SSH tunnels you also need to bind-mount the private key: add `-v ~/.ssh/id_ed25519:/keys/id_ed25519:ro` and reference `/keys/id_ed25519` in your config's `ssh.privateKeyPath`.
 - Pin to a specific version (`:v0.4.1`) for reproducibility; `:latest` follows the current release.
@@ -177,15 +182,15 @@ Client config:
 
 **Flags:**
 
-| Flag | Default | Notes |
-|---|---|---|
-| `--transport=stdio\|http` | `stdio` | |
-| `--port` | `8080` | |
-| `--host` | `127.0.0.1` | Loopback by default. Set `--host=0.0.0.0` to expose externally; the server then **requires** `--allowed-hosts`. |
-| `--path` | `/mcp` | The HTTP path the transport serves on. |
-| `--allowed-hosts` | (none) | Comma-separated Host-header allowlist. Required when binding to a non-loopback address. Defends against DNS-rebinding. |
-| `--no-auth` | off | Opt out of bearer auth. Logged as a warning on every startup. Useful for `127.0.0.1`-only dev setups. |
-| `--cors-origin` | (none) | Permissive CORS for a single origin. Skip unless a browser-based MCP client needs it. |
+| Flag                      | Default     | Notes                                                                                                                  |
+| ------------------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `--transport=stdio\|http` | `stdio`     |                                                                                                                        |
+| `--port`                  | `8080`      |                                                                                                                        |
+| `--host`                  | `127.0.0.1` | Loopback by default. Set `--host=0.0.0.0` to expose externally; the server then **requires** `--allowed-hosts`.        |
+| `--path`                  | `/mcp`      | The HTTP path the transport serves on.                                                                                 |
+| `--allowed-hosts`         | (none)      | Comma-separated Host-header allowlist. Required when binding to a non-loopback address. Defends against DNS-rebinding. |
+| `--no-auth`               | off         | Opt out of bearer auth. Logged as a warning on every startup. Useful for `127.0.0.1`-only dev setups.                  |
+| `--cors-origin`           | (none)      | Permissive CORS for a single origin. Skip unless a browser-based MCP client needs it.                                  |
 
 **Environment variables:**
 
@@ -204,14 +209,14 @@ The defaults — loopback + bearer token — are designed for the "operator and 
 
 What the bearer token alone does NOT protect against, and how to address each:
 
-| Gap | Mitigation |
-|---|---|
-| **Wire interception.** The server speaks plaintext HTTP; an observer on any non-loopback network captures the token. | Terminate TLS at a reverse proxy (Caddy / nginx / Cloudflare) and run querybridge on loopback. |
-| **No expiry / rotation.** A token leaked once is valid until the next restart. | Rotate by restarting the server with a new env var. For real rotation discipline, put an OAuth2/OIDC proxy in front that issues short-lived service tokens. |
-| **No scope.** One token → every tool, every connection. A leaked token can `execute_query` `DROP TABLE` against any writable connection. | Set `"readonly": true` on every connection that doesn't need writes. This is the actual blast-radius control — far stronger than auth alone. |
-| **No replay protection.** A captured request + header is replayable. | TLS prevents the capture in the first place. |
-| **No rate limiting.** | Reverse-proxy-level rate limits (`limit_req` in nginx, `rate_limit` in Caddy). |
-| **No per-user audit.** Every call logs as the same anonymous bearer. | OIDC proxy that forwards a verified `X-Forwarded-User` header you can route on. querybridge itself does not currently consume this — but the network-edge identity is the right place for it. |
+| Gap                                                                                                                                      | Mitigation                                                                                                                                                                                    |
+| ---------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Wire interception.** The server speaks plaintext HTTP; an observer on any non-loopback network captures the token.                     | Terminate TLS at a reverse proxy (Caddy / nginx / Cloudflare) and run querybridge on loopback.                                                                                                |
+| **No expiry / rotation.** A token leaked once is valid until the next restart.                                                           | Rotate by restarting the server with a new env var. For real rotation discipline, put an OAuth2/OIDC proxy in front that issues short-lived service tokens.                                   |
+| **No scope.** One token → every tool, every connection. A leaked token can `execute_query` `DROP TABLE` against any writable connection. | Set `"readonly": true` on every connection that doesn't need writes. This is the actual blast-radius control — far stronger than auth alone.                                                  |
+| **No replay protection.** A captured request + header is replayable.                                                                     | TLS prevents the capture in the first place.                                                                                                                                                  |
+| **No rate limiting.**                                                                                                                    | Reverse-proxy-level rate limits (`limit_req` in nginx, `rate_limit` in Caddy).                                                                                                                |
+| **No per-user audit.** Every call logs as the same anonymous bearer.                                                                     | OIDC proxy that forwards a verified `X-Forwarded-User` header you can route on. querybridge itself does not currently consume this — but the network-edge identity is the right place for it. |
 
 **Minimal TLS-terminating proxy (Caddy):**
 
@@ -246,7 +251,7 @@ Pass `--no-auth` to querybridge in this layout — the upstream proxy is the sec
 - [ ] TLS terminated by something in front (querybridge itself does not do TLS).
 - [ ] querybridge bound to `127.0.0.1` — never `0.0.0.0` on a public interface.
 - [ ] Every connection that doesn't strictly need writes has `"readonly": true`.
-- [ ] Strong token (`openssl rand -base64 32` or stronger), or `--no-auth` *only* when the upstream proxy is the trust boundary.
+- [ ] Strong token (`openssl rand -base64 32` or stronger), or `--no-auth` _only_ when the upstream proxy is the trust boundary.
 - [ ] Reverse-proxy rate limits set per your traffic shape.
 - [ ] Network ACLs restrict who can reach the proxy (VPN / VPC / Tailscale / Cloudflare Access — pick one).
 - [ ] Logs from querybridge (stderr) shipped somewhere you can audit. Every tool invocation is logged with tool name, connection, and elapsed ms.
@@ -269,13 +274,13 @@ The CLI manages your `config.json` without editing it by hand. After `npm instal
 
 ### Commands
 
-| Command | Description |
-|---------|-------------|
-| `querybridge-mcp list` | List all configured connections |
-| `querybridge-mcp add [name]` | Add a new connection (interactive) |
-| `querybridge-mcp remove <name>` | Remove a connection |
-| `querybridge-mcp test [name]` | Test one or all connections |
-| `querybridge-mcp init` | Create an empty config file |
+| Command                         | Description                        |
+| ------------------------------- | ---------------------------------- |
+| `querybridge-mcp list`          | List all configured connections    |
+| `querybridge-mcp add [name]`    | Add a new connection (interactive) |
+| `querybridge-mcp remove <name>` | Remove a connection                |
+| `querybridge-mcp test [name]`   | Test one or all connections        |
+| `querybridge-mcp init`          | Create an empty config file        |
 
 ### Examples
 
@@ -348,19 +353,19 @@ MYSQL_CONNECTION_NAME=default
 
 ### Connection options
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `name` | string | required | Unique connection identifier |
-| `host` | string | required | MySQL hostname or IP |
-| `port` | number | `3306` | MySQL port |
-| `user` | string | required | MySQL username |
-| `password` | string | | MySQL password |
-| `database` | string | | Default database/schema |
-| `readonly` | boolean | `true` | Block write operations |
-| `queryTimeout` | number | `30000` | Query timeout in milliseconds |
-| `poolSize` | number | `5` | mysql2 connection-pool size |
-| `ssh` | object | | SSH tunnel configuration |
-| `ssl` | object or `true` | | SSL/TLS configuration |
+| Field          | Type             | Default  | Description                   |
+| -------------- | ---------------- | -------- | ----------------------------- |
+| `name`         | string           | required | Unique connection identifier  |
+| `host`         | string           | required | MySQL hostname or IP          |
+| `port`         | number           | `3306`   | MySQL port                    |
+| `user`         | string           | required | MySQL username                |
+| `password`     | string           |          | MySQL password                |
+| `database`     | string           |          | Default database/schema       |
+| `readonly`     | boolean          | `true`   | Block write operations        |
+| `queryTimeout` | number           | `30000`  | Query timeout in milliseconds |
+| `poolSize`     | number           | `5`      | mysql2 connection-pool size   |
+| `ssh`          | object           |          | SSH tunnel configuration      |
+| `ssl`          | object or `true` |          | SSL/TLS configuration         |
 
 ### Secrets indirection
 
@@ -379,11 +384,11 @@ config file:
 }
 ```
 
-| Form | Behavior |
-|------|----------|
-| `"secret"` | Plain string (back-compat, fine for dev) |
-| `{ "env": "VAR_NAME" }` | Read from `process.env.VAR_NAME` at startup. Errors if unset or empty. |
-| `{ "file": "/path/to/file" }` | Read file contents (tilde-expanded, trailing whitespace trimmed). |
+| Form                          | Behavior                                                               |
+| ----------------------------- | ---------------------------------------------------------------------- |
+| `"secret"`                    | Plain string (back-compat, fine for dev)                               |
+| `{ "env": "VAR_NAME" }`       | Read from `process.env.VAR_NAME` at startup. Errors if unset or empty. |
+| `{ "file": "/path/to/file" }` | Read file contents (tilde-expanded, trailing whitespace trimmed).      |
 
 Resolution happens once at config load; downstream code only sees the
 resolved string.
@@ -412,15 +417,15 @@ Tunnel MySQL traffic through an SSH bastion host. Supports password and private 
 }
 ```
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `host` | string | required | SSH server hostname |
-| `port` | number | `22` | SSH port |
-| `username` | string | required | SSH username |
-| `password` | string | | SSH password |
-| `privateKeyPath` | string | | Path to private key (supports `~/`) |
-| `passphrase` | string | | Private key passphrase |
-| `hostFingerprint` | string | | Pinned SHA256 fingerprint of the SSH server's host key (format: `ssh-keygen -lf`). When unset, the server logs a warning and accepts any host key. Get it with `ssh-keyscan <host> \| ssh-keygen -lf -`. |
+| Field             | Type   | Default  | Description                                                                                                                                                                                              |
+| ----------------- | ------ | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `host`            | string | required | SSH server hostname                                                                                                                                                                                      |
+| `port`            | number | `22`     | SSH port                                                                                                                                                                                                 |
+| `username`        | string | required | SSH username                                                                                                                                                                                             |
+| `password`        | string |          | SSH password                                                                                                                                                                                             |
+| `privateKeyPath`  | string |          | Path to private key (supports `~/`)                                                                                                                                                                      |
+| `passphrase`      | string |          | Private key passphrase                                                                                                                                                                                   |
+| `hostFingerprint` | string |          | Pinned SHA256 fingerprint of the SSH server's host key (format: `ssh-keygen -lf`). When unset, the server logs a warning and accepts any host key. Get it with `ssh-keyscan <host> \| ssh-keygen -lf -`. |
 
 ### SSL/TLS
 
@@ -449,93 +454,93 @@ Or with custom certificates:
 
 ### Connection management
 
-| Tool | Description |
-|------|-------------|
+| Tool               | Description                                                |
+| ------------------ | ---------------------------------------------------------- |
 | `list_connections` | List all connections with status, host, SSH/SSL indicators |
-| `list_databases` | List all databases accessible on a connection |
-| `use_database` | Switch the active database/schema for a connection |
+| `list_databases`   | List all databases accessible on a connection              |
+| `use_database`     | Switch the active database/schema for a connection         |
 
 ### Schema introspection
 
-| Tool | Description |
-|------|-------------|
-| `list_tables` | List tables with row counts and engine info |
-| `list_views` | List views with definer, security type, updatability |
-| `describe_table` | Show columns, indexes, and CREATE TABLE statement |
-| `describe_view` | Show columns and CREATE VIEW DDL of a view |
-| `get_ddl` | Get clean CREATE TABLE DDL |
-| `get_view_ddl` | Get clean CREATE VIEW DDL (raw, not truncated) |
-| `get_foreign_keys` | Show FK relationships with cascade rules |
-| `get_indexes` | Show all indexes with duplicate detection |
-| `search_columns` | Find columns by name pattern across all tables |
+| Tool               | Description                                          |
+| ------------------ | ---------------------------------------------------- |
+| `list_tables`      | List tables with row counts and engine info          |
+| `list_views`       | List views with definer, security type, updatability |
+| `describe_table`   | Show columns, indexes, and CREATE TABLE statement    |
+| `describe_view`    | Show columns and CREATE VIEW DDL of a view           |
+| `get_ddl`          | Get clean CREATE TABLE DDL                           |
+| `get_view_ddl`     | Get clean CREATE VIEW DDL (raw, not truncated)       |
+| `get_foreign_keys` | Show FK relationships with cascade rules             |
+| `get_indexes`      | Show all indexes with duplicate detection            |
+| `search_columns`   | Find columns by name pattern across all tables       |
 
 ### Query execution
 
-| Tool | Description |
-|------|-------------|
-| `execute_query` | Run SQL with parameterized values. Writes blocked on read-only connections |
-| `explain_query` | Run EXPLAIN in TRADITIONAL, JSON, or TREE format |
+| Tool              | Description                                                                                                                                                                                                                                                                |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `execute_query`   | Run SQL with parameterized values. Writes blocked on read-only connections                                                                                                                                                                                                 |
+| `explain_query`   | Run EXPLAIN in TRADITIONAL, JSON, or TREE format                                                                                                                                                                                                                           |
 | `streaming_query` | Stream a large SELECT to a NDJSON file on disk. Bypasses `execute_query`'s 1k-row in-memory cap. Row + byte caps both apply; hitting either issues `KILL QUERY` on the worker and marks the result `truncated`. Atomic rename on success; temp file is unlinked on failure |
 
 ### Data inspection
 
-| Tool | Description |
-|------|-------------|
-| `get_table_stats` | Row counts, data/index sizes, timestamps |
-| `sample_data` | Preview rows from a table (default: 5 rows) |
+| Tool              | Description                                 |
+| ----------------- | ------------------------------------------- |
+| `get_table_stats` | Row counts, data/index sizes, timestamps    |
+| `sample_data`     | Preview rows from a table (default: 5 rows) |
 
 ### Stored routines and programmability
 
-| Tool | Description |
-|------|-------------|
-| `list_routines` | List stored procedures and functions |
-| `get_routine_ddl` | Get full DDL for a procedure or function |
-| `list_triggers` | List triggers, optionally filtered by table |
-| `get_trigger_ddl` | Get full trigger definition |
-| `list_events` | List scheduled events with status and timing |
-| `get_event_ddl` | Get full event definition |
+| Tool              | Description                                  |
+| ----------------- | -------------------------------------------- |
+| `list_routines`   | List stored procedures and functions         |
+| `get_routine_ddl` | Get full DDL for a procedure or function     |
+| `list_triggers`   | List triggers, optionally filtered by table  |
+| `get_trigger_ddl` | Get full trigger definition                  |
+| `list_events`     | List scheduled events with status and timing |
+| `get_event_ddl`   | Get full event definition                    |
 
 ### Visualization
 
-| Tool | Description |
-|------|-------------|
+| Tool           | Description                                                                     |
+| -------------- | ------------------------------------------------------------------------------- |
 | `generate_erd` | Generate a Mermaid ER diagram with tables, columns, PKs, FKs, and relationships |
 
 ### Operator / admin
 
-| Tool | Description |
-|------|-------------|
-| `list_processes` | Show running connections + their current queries (filter by minimum duration) |
-| `kill_query` | KILL QUERY (or KILL CONNECTION) by process ID. Gated: requires `readonly: false` |
-| `get_unused_indexes` | Detect secondary indexes with zero reads in `performance_schema` and produce DROP statements |
-| `get_charset_collation` | Show character set and collation at database, table, and column levels |
+| Tool                    | Description                                                                                  |
+| ----------------------- | -------------------------------------------------------------------------------------------- |
+| `list_processes`        | Show running connections + their current queries (filter by minimum duration)                |
+| `kill_query`            | KILL QUERY (or KILL CONNECTION) by process ID. Gated: requires `readonly: false`             |
+| `get_unused_indexes`    | Detect secondary indexes with zero reads in `performance_schema` and produce DROP statements |
+| `get_charset_collation` | Show character set and collation at database, table, and column levels                       |
 
 ### Cross-database diffing
 
-| Tool | Description |
-|------|-------------|
-| `compare_schema_file` | Diff a checked-in `.sql` schema file against a live database. Loads the file into a temp DB on a writable scratch connection, delegates to the same engine `compare_schemas` uses, and drops the temp DB. Designed for CI drift detection against a source-of-truth schema. V1 doesn't support `DELIMITER` blocks — stored routines / triggers in the file won't parse cleanly. |
-| `compare_schemas` | Diff two databases (potentially across connections). Reports drift across **9 aspects**: tables, table attributes (engine/charset/**partitioning**), columns (incl. comments, generated cols), indexes (incl. MySQL 8 invisible indexes, functional indexes, prefix lengths), foreign keys, views, routines, triggers, events. SQL bodies are whitespace-normalized; int display widths are normalized for cross-version (5.7 ↔ 8.0+) sanity. Restrict with `tables` filter or `scope` for cheaper runs. `summaryOnly: true` keeps huge diffs in context budget. Emits MCP progress notifications per scope. Honors client-side cancellation. |
+| Tool                  | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `compare_schema_file` | Diff a checked-in `.sql` schema file against a live database. Loads the file into a temp DB on a writable scratch connection, delegates to the same engine `compare_schemas` uses, and drops the temp DB. Designed for CI drift detection against a source-of-truth schema. V1 doesn't support `DELIMITER` blocks — stored routines / triggers in the file won't parse cleanly.                                                                                                                                                                                                                                                               |
+| `compare_schemas`     | Diff two databases (potentially across connections). Reports drift across **9 aspects**: tables, table attributes (engine/charset/**partitioning**), columns (incl. comments, generated cols), indexes (incl. MySQL 8 invisible indexes, functional indexes, prefix lengths), foreign keys, views, routines, triggers, events. SQL bodies are whitespace-normalized; int display widths are normalized for cross-version (5.7 ↔ 8.0+) sanity. Restrict with `tables` filter or `scope` for cheaper runs. `summaryOnly: true` keeps huge diffs in context budget. Emits MCP progress notifications per scope. Honors client-side cancellation. |
 
 ## Resources
 
 MCP resources let Claude browse schema information without explicit tool calls.
 
-| URI Pattern | Description |
-|-------------|-------------|
-| `mysql://{connection}/{database}/{table}/schema` | Table schema with columns and DDL |
-| `mysql://{connection}/{database}/overview` | Database overview with all tables and row counts |
+| URI Pattern                                      | Description                                      |
+| ------------------------------------------------ | ------------------------------------------------ |
+| `mysql://{connection}/{database}/{table}/schema` | Table schema with columns and DDL                |
+| `mysql://{connection}/{database}/overview`       | Database overview with all tables and row counts |
 
 ## Prompts
 
 Pre-built prompt templates that guide Claude through multi-step database workflows.
 
-| Prompt | Description |
-|--------|-------------|
-| `explore_database` | Discover tables, schemas, FKs, routines, triggers, events, and generate an ERD |
-| `optimize_query` | Analyze a query with EXPLAIN, check indexes, suggest improvements |
-| `find_data` | Search columns by pattern, sample tables, build a query |
-| `audit_schema` | Check for missing PKs, redundant indexes, empty tables, catalog routines and triggers |
+| Prompt             | Description                                                                           |
+| ------------------ | ------------------------------------------------------------------------------------- |
+| `explore_database` | Discover tables, schemas, FKs, routines, triggers, events, and generate an ERD        |
+| `optimize_query`   | Analyze a query with EXPLAIN, check indexes, suggest improvements                     |
+| `find_data`        | Search columns by pattern, sample tables, build a query                               |
+| `audit_schema`     | Check for missing PKs, redundant indexes, empty tables, catalog routines and triggers |
 
 ### Using prompts in Claude Code
 
@@ -549,6 +554,7 @@ Prompts appear in the MCP prompt list. Select one and provide the required argum
 - **Parameterized queries.** The `execute_query` tool uses prepared statements with `?` placeholders to prevent SQL injection.
 - **Result limits.** Unbounded SELECT queries are auto-limited to 1000 rows. Table output is additionally capped at 256KB with a truncation note; individual cell values are truncated at 120 characters.
 - **Bounded file output.** `streaming_query` writes to operator-supplied paths but refuses `/proc`, `/dev`, `/sys`, `/boot`, refuses to clobber existing files unless `overwrite: true`, and enforces both a 1 GiB byte cap and a 1M-row cap by default (10 GiB / 100M hard ceilings). Cap-stop triggers `KILL QUERY` on the worker rather than just abandoning the stream.
+- **Scoped scratch privileges.** `compare_schema_file` requires a writable scratch connection but always creates temp databases under the `_qbmcp_check_*` prefix. Scope the scratch MySQL user to that namespace rather than `*.*` so a hostile agent with that user can't reach beyond the scratch space — see `SECURITY.md` for the recommended `GRANT` statement.
 - **Cancellable queries.** If the MCP client cancels a request, `execute_query` and `explain_query` issue `KILL QUERY` on a sibling connection so the in-flight statement is stopped at the server, not just abandoned by the client.
 - **Tool annotations.** Every tool advertises MCP `readOnlyHint` / `destructiveHint` / `idempotentHint` so clients (and humans) can gate confirmation prompts appropriately.
 - **Structured results.** Tools return both human-readable text AND `structuredContent` JSON, so clients that support the modern MCP spec can render rich tables instead of monospace ASCII.

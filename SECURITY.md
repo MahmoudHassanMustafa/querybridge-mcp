@@ -18,8 +18,14 @@ credit to the reporter unless you request otherwise.
 
 ## Supported Versions
 
-Only the `main` branch and the most recent release receive security
-updates. If you're running an older version, update first.
+querybridge-mcp follows semantic versioning. Security fixes ship against:
+
+| Version | Supported |
+| ------- | --------- |
+| 0.9.x   | ✅        |
+| < 0.9   | ❌        |
+
+When a new minor (0.10, 0.11, ...) lands, the previous minor stops receiving fixes unless an operator explicitly requests a backport. The `main` branch always reflects the next release.
 
 ## Security Posture
 
@@ -93,6 +99,40 @@ query, or credential is ever written to stdout or to a file.
   connection, you are handing the LLM the ability to issue
   `INSERT`/`UPDATE`/`DELETE`/`DROP`. Grant the MySQL user only the
   privileges it actually needs.
-- **Network surface.** The MCP server itself listens on stdio only —
-  it does not open network ports. SSH tunnels bind to `127.0.0.1`
-  on an ephemeral port and are not reachable from other hosts.
+- **Network surface (stdio default).** With the default `--transport=stdio`,
+  the MCP server does not open network ports. SSH tunnels bind to
+  `127.0.0.1` on an ephemeral port and are not reachable from other hosts.
+- **Network surface (HTTP transport).** With `--transport=http`, the
+  server listens on a TCP port (loopback by default). Bearer-token
+  authentication is required at the boundary; CORS is disabled; the
+  body is capped at 4 MiB. **Plaintext HTTP only — terminate TLS at
+  a reverse proxy** if exposing beyond loopback. See the
+  [Production deployment section](README.md) for the full hardening
+  recipe, including the gaps the bearer-token model alone does NOT
+  close (no expiry, no per-tool scope, no rate limiting). The
+  reverse-proxy + OAuth/OIDC pattern is the documented path for
+  production exposure.
+- **`compare_schema_file` scratch privileges.** The tool requires a
+  writable scratch connection to load the `.sql` file into a temp
+  database. Grant the scratch user the **narrowest possible**
+  privileges — temp DBs created by this tool always live under the
+  `_qbmcp_check_*` prefix, so:
+
+  ```sql
+  GRANT CREATE, DROP ON `_qbmcp_check_%`.* TO 'qbmcp_scratch'@'%';
+  GRANT ALL PRIVILEGES ON `_qbmcp_check_%`.* TO 'qbmcp_scratch'@'%';
+  ```
+
+  Avoid granting `*.*` to the scratch user — a bug or hostile agent
+  with access to that user could otherwise touch databases beyond
+  the temp scratch space.
+
+## Dependency hygiene
+
+- We run `pnpm audit` against every release branch before publishing.
+- Lockfile bumps for transitive-dep CVEs ship as `patch` releases —
+  see `CHANGELOG.md` entries tagged "clear `pnpm audit` advisories".
+- The published npm tarball contains only `dist/` (no `node_modules`).
+  The Docker image (GHCR) bundles production `node_modules`; transitive
+  vulns there are visible to scanners, which is the case we typically
+  fix first.
