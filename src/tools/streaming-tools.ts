@@ -187,7 +187,7 @@ type StreamingQueryArgs = {
 
 // ── streaming primitive ────────────────────────────────────────────
 
-interface StreamResult {
+export interface StreamResult {
   rowsWritten: number;
   bytesWritten: number;
   truncated: boolean;
@@ -211,8 +211,14 @@ interface CallbackQueryable {
  * a sibling pool connection so MySQL stops sending; the for-await over
  * the stream then sees an ER_QUERY_INTERRUPTED error which we treat as
  * a clean truncation rather than a failure.
+ *
+ * Exported for unit tests — driving this with a synthetic `Readable`
+ * lets us verify the progress-notification cadence and the cap-stop
+ * killer wiring without spinning up testcontainers. Production callers
+ * should still reach `handleStreamingQuery` so they get the SQL gate,
+ * path validation, and worker lifecycle around it.
  */
-async function pumpStream(
+export async function pumpStream(
   rowStream: NodeJS.ReadableStream,
   writer: WriteStream,
   killer: (connectionId: number) => Promise<void>,

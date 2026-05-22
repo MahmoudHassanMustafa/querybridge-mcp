@@ -1,23 +1,28 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { once } from "node:events";
+import { createWriteStream } from "node:fs";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
+import { Readable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   __resetConnectionsForTests,
   registerMockConnection,
 } from "../connection.js";
+import { STREAM_PROGRESS_ROW_INTERVAL } from "../limits.js";
 import { MockRunner } from "./utils/mock-runner.js";
 import {
   handleStreamingQuery,
+  pumpStream,
   validateOutputPath,
 } from "../tools/streaming-tools.js";
 
-// The streaming pump itself needs a real mysql2 pool (it reaches into
-// the underlying callback connection for .stream()), so the deep
-// behaviour lives in the integration suite. These unit tests cover the
-// gates *before* the stream opens: SQL validation, path safety, and
-// the connection lookup. Together they protect the surface an agent
-// can probe without ever needing a database.
+// The mysql2 row stream itself needs a real pool — that lives in the
+// integration suite. These unit tests cover the gates *before* the
+// stream opens (SQL validation, path safety, connection lookup), and
+// drive `pumpStream` directly with a synthetic Readable to verify
+// progress-notification cadence and cap-stop killer wiring without a
+// container.
 
 let TMP: string;
 
@@ -170,5 +175,190 @@ describe("handleStreamingQuery", () => {
         output_path: path.join(TMP, "out.ndjson"),
       }),
     ).rejects.toThrow(/mock without a backing pool/);
+  });
+});
+
+// ── pumpStream — progress + cap-stop wiring ──────────────────────
+
+describe("pumpStream", () => {
+  /** Make a writer + close it cleanly so file content can be inspected. */
+  async function openWriter(target: string) {
+    const writer = createWriteStream(target, { encoding: "utf8" });
+    await once(writer, "open");
+    return writer;
+  }
+
+  it("emits a notifications/progress every STREAM_PROGRESS_ROW_INTERVAL rows", async () => {
+    // 2× the interval guarantees we hit the boundary twice and never on
+    // the final row — that's the cadence we want to verify.
+    const total = STREAM_PROGRESS_ROW_INTERVAL * 2 + 250;
+    const rows = Array.from({ length: total }, (_, i) => ({ id: i }));
+    const writer = await openWriter(path.join(TMP, "progress.ndjson"));
+
+    const notifications: Array<{
+      method: string;
+      params: Record<string, unknown>;
+    }> = [];
+    const extra = {
+      _meta: { progressToken: "tok-1" },
+      sendNotification: async (n: {
+        method: string;
+        params: Record<string, unknown>;
+      }) => {
+        notifications.push(n);
+      },
+    };
+
+    const result = await pumpStream(
+      Readable.from(rows, { objectMode: true }),
+      writer,
+      async () => {
+        throw new Error("killer must not run when no cap is hit");
+      },
+      42,
+      { maxRows: 100_000, maxBytes: 100_000_000 },
+      extra,
+    );
+    writer.end();
+    await once(writer, "finish");
+
+    expect(result.rowsWritten).toBe(total);
+    expect(result.truncated).toBe(false);
+
+    // Cadence: rows 1000 and 2000 → exactly 2 events for a 2250-row stream.
+    expect(notifications).toHaveLength(2);
+    expect(notifications[0]).toEqual({
+      method: "notifications/progress",
+      params: {
+        progressToken: "tok-1",
+        progress: STREAM_PROGRESS_ROW_INTERVAL,
+        total: 100_000,
+        message: STREAM_PROGRESS_ROW_INTERVAL + " rows streamed",
+      },
+    });
+    expect(notifications[1]?.params).toMatchObject({
+      progress: STREAM_PROGRESS_ROW_INTERVAL * 2,
+      message: STREAM_PROGRESS_ROW_INTERVAL * 2 + " rows streamed",
+    });
+  });
+
+  it("emits NO progress notifications when the client did not opt in", async () => {
+    // No progressToken means the request didn't ask for progress.
+    // emitProgress is required to be a no-op so we don't spam clients
+    // that aren't listening.
+    const writer = await openWriter(path.join(TMP, "no-progress.ndjson"));
+    const rows = Array.from(
+      { length: STREAM_PROGRESS_ROW_INTERVAL * 2 },
+      (_, i) => ({ id: i }),
+    );
+
+    let calls = 0;
+    const extra = {
+      sendNotification: async () => {
+        calls += 1;
+      },
+    };
+
+    await pumpStream(
+      Readable.from(rows, { objectMode: true }),
+      writer,
+      async () => {},
+      42,
+      { maxRows: 100_000, maxBytes: 100_000_000 },
+      extra,
+    );
+    writer.end();
+    await once(writer, "finish");
+    expect(calls).toBe(0);
+  });
+
+  it("invokes the killer once with the connection id when max_rows is hit", async () => {
+    const writer = await openWriter(path.join(TMP, "capped-rows.ndjson"));
+    const rows = Array.from({ length: 5000 }, (_, i) => ({ id: i }));
+
+    const killerCalls: number[] = [];
+    const result = await pumpStream(
+      Readable.from(rows, { objectMode: true }),
+      writer,
+      async (id) => {
+        killerCalls.push(id);
+      },
+      999, // fake connection id we expect to see forwarded
+      { maxRows: 100, maxBytes: 100_000_000 },
+      undefined,
+    );
+    writer.end();
+    await once(writer, "finish");
+
+    expect(result.truncated).toBe(true);
+    expect(result.rowsWritten).toBe(100);
+    // Fire-and-forget, but exactly once even though we drain another
+    // 4900 rows after the cap is hit (the for-await pulls the remaining
+    // buffer; the killIssued guard prevents re-firing).
+    expect(killerCalls).toEqual([999]);
+
+    const lines = (
+      await readFile(path.join(TMP, "capped-rows.ndjson"), "utf8")
+    )
+      .trim()
+      .split("\n");
+    expect(lines).toHaveLength(100);
+  });
+
+  it("invokes the killer when max_bytes would be exceeded by the next row", async () => {
+    // Each row JSON-encodes to ~12 bytes ({"id":N}\n). max_bytes=120
+    // stops between rows 8 and 11 depending on number width.
+    const writer = await openWriter(path.join(TMP, "capped-bytes.ndjson"));
+    const rows = Array.from({ length: 500 }, (_, i) => ({ id: i }));
+
+    const killerCalls: number[] = [];
+    const result = await pumpStream(
+      Readable.from(rows, { objectMode: true }),
+      writer,
+      async (id) => {
+        killerCalls.push(id);
+      },
+      7,
+      { maxRows: 100_000, maxBytes: 120 },
+      undefined,
+    );
+    writer.end();
+    await once(writer, "finish");
+
+    expect(result.truncated).toBe(true);
+    expect(result.bytesWritten).toBeLessThanOrEqual(120);
+    expect(result.rowsWritten).toBeGreaterThan(0);
+    expect(killerCalls).toEqual([7]);
+  });
+
+  it("survives a sendNotification that throws — the export still completes", async () => {
+    // emitProgress wraps sendNotification in a try/catch. If a flaky
+    // client connection raises mid-stream, the export must finish, not
+    // abort midway through writing.
+    const writer = await openWriter(path.join(TMP, "noisy-client.ndjson"));
+    const rows = Array.from(
+      { length: STREAM_PROGRESS_ROW_INTERVAL + 5 },
+      (_, i) => ({ id: i }),
+    );
+    const extra = {
+      _meta: { progressToken: "tok-bad" },
+      sendNotification: async () => {
+        throw new Error("client gone");
+      },
+    };
+
+    const result = await pumpStream(
+      Readable.from(rows, { objectMode: true }),
+      writer,
+      async () => {},
+      42,
+      { maxRows: 100_000, maxBytes: 100_000_000 },
+      extra,
+    );
+    writer.end();
+    await once(writer, "finish");
+
+    expect(result.rowsWritten).toBe(STREAM_PROGRESS_ROW_INTERVAL + 5);
+    expect(result.truncated).toBe(false);
   });
 });

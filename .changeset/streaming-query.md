@@ -23,6 +23,6 @@ Designed for the "dump this large table so the agent can grep/aggregate it witho
 - Row and byte caps both apply — hitting either marks the result `truncated: true` and issues `KILL QUERY` against the worker so MySQL stops sending. Default caps bound the disk-DoS blast radius for HTTP-mode (authenticated remote) callers.
 - Atomic rename: writes to `${output_path}.tmp` and renames on success; on failure the temp file is unlinked.
 
-**Progress:** emits a `notifications/progress` event every 1000 rows when the client opts in via `_meta.progressToken`.
+**Progress notifications.** Every 1000 rows the tool emits `notifications/progress` with `{ progressToken, progress, total, message }` when the client opts in via `_meta.progressToken`. Best-effort: a failing `sendNotification` (flaky client) is swallowed so it doesn't abort the export mid-write.
 
-**Tests:** 15 new unit tests (path validation + pre-stream gates) and 4 new integration tests against MySQL 8.4 (full export, row-cap truncation, byte-cap truncation, write-SQL rejection on writable connection).
+**Tests:** 20 new unit tests (path validation, pre-stream gates, `pumpStream` cadence + cap-stop + sendNotification error-tolerance against a synthetic `Readable`) and 4 new integration tests against MySQL 8.4 (full export, row-cap truncation, byte-cap truncation, write-SQL rejection on writable connection).
