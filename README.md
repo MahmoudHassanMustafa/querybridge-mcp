@@ -29,8 +29,8 @@ flowchart LR
   C -- stdin/stdout --> S
   S --> P
   P -- direct TCP --> DB
-  P -. via 127.0.0.1 .-> T
-  T -. forward to remote :3306 .-> DB
+  P -. via loopback .-> T
+  T -. forwards to remote MySQL .-> DB
 
   classDef ext fill:#eef,stroke:#446,color:#000
   classDef int fill:#efe,stroke:#464,color:#000
