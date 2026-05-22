@@ -30,6 +30,18 @@ npx querybridge-mcp <command>
 npx querybridge-mcp-server   # starts the MCP server
 ```
 
+Or pull the Docker image (no Node install needed):
+
+```bash
+docker pull ghcr.io/mahmoudhassanmustafa/querybridge-mcp:latest
+```
+
+Check the version on any of the above:
+
+```bash
+querybridge-mcp --version       # or: querybridge-mcp-server --version
+```
+
 ### Register with Claude Code
 
 ```bash
@@ -53,6 +65,44 @@ Or manually in `~/.claude.json`:
 ```
 
 If `querybridge-mcp-server` isn't on your PATH (e.g. not installed globally), swap `command` for `npx` with `"args": ["-y", "querybridge-mcp-server"]`.
+
+### Register with Claude Code via Docker
+
+For environments where Node/pnpm aren't installed, run the server from a published image. Mount your config read-only and let the container handle the rest:
+
+```bash
+claude mcp add querybridge-mcp -- \
+  docker run --rm -i \
+  -v /path/to/config.json:/config/config.json:ro \
+  -e QUERYBRIDGE_MCP_CONFIG=/config/config.json \
+  ghcr.io/mahmoudhassanmustafa/querybridge-mcp:latest
+```
+
+Or manually in `~/.claude.json`:
+
+```json
+{
+  "mcpServers": {
+    "querybridge-mcp": {
+      "type": "stdio",
+      "command": "docker",
+      "args": [
+        "run", "--rm", "-i",
+        "-v", "/path/to/config.json:/config/config.json:ro",
+        "-e", "QUERYBRIDGE_MCP_CONFIG=/config/config.json",
+        "ghcr.io/mahmoudhassanmustafa/querybridge-mcp:latest"
+      ]
+    }
+  }
+}
+```
+
+Notes:
+- `--rm -i` is required — `-i` wires stdio (the MCP transport); `--rm` cleans up the container after the client disconnects.
+- For SSH tunnels you also need to bind-mount the private key: add `-v ~/.ssh/id_ed25519:/keys/id_ed25519:ro` and reference `/keys/id_ed25519` in your config's `ssh.privateKeyPath`.
+- Pin to a specific version (`:v0.4.1`) for reproducibility; `:latest` follows the current release.
+- The image runs as a non-root `node` user. Mounts must be readable by UID 1000.
+- Multi-arch: `linux/amd64` + `linux/arm64`. Apple Silicon and Linux servers work out of the box.
 
 ## CLI
 
