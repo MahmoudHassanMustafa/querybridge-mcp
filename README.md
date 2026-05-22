@@ -361,6 +361,7 @@ Or with custom certificates:
 |------|-------------|
 | `execute_query` | Run SQL with parameterized values. Writes blocked on read-only connections |
 | `explain_query` | Run EXPLAIN in TRADITIONAL, JSON, or TREE format |
+| `streaming_query` | Stream a large SELECT to a NDJSON file on disk. Bypasses `execute_query`'s 1k-row in-memory cap. Row + byte caps both apply; hitting either issues `KILL QUERY` on the worker and marks the result `truncated`. Atomic rename on success; temp file is unlinked on failure |
 
 ### Data inspection
 
@@ -432,6 +433,7 @@ Prompts appear in the MCP prompt list. Select one and provide the required argum
 - **LOAD DATA LOCAL INFILE disabled.** The `LOCAL_FILES` capability is dropped from the client handshake and the `infileStreamFactory` is hard-wired to throw — a malicious MySQL server cannot read files from the MCP host.
 - **Parameterized queries.** The `execute_query` tool uses prepared statements with `?` placeholders to prevent SQL injection.
 - **Result limits.** Unbounded SELECT queries are auto-limited to 1000 rows. Table output is additionally capped at 256KB with a truncation note; individual cell values are truncated at 120 characters.
+- **Bounded file output.** `streaming_query` writes to operator-supplied paths but refuses `/proc`, `/dev`, `/sys`, `/boot`, refuses to clobber existing files unless `overwrite: true`, and enforces both a 1 GiB byte cap and a 1M-row cap by default (10 GiB / 100M hard ceilings). Cap-stop triggers `KILL QUERY` on the worker rather than just abandoning the stream.
 - **Cancellable queries.** If the MCP client cancels a request, `execute_query` and `explain_query` issue `KILL QUERY` on a sibling connection so the in-flight statement is stopped at the server, not just abandoned by the client.
 - **Tool annotations.** Every tool advertises MCP `readOnlyHint` / `destructiveHint` / `idempotentHint` so clients (and humans) can gate confirmation prompts appropriately.
 - **Structured results.** Tools return both human-readable text AND `structuredContent` JSON, so clients that support the modern MCP spec can render rich tables instead of monospace ASCII.
@@ -467,6 +469,7 @@ querybridge-mcp/
       connection-tools.ts list_connections, list_databases, use_database
       schema/             list_tables, describe_table, get_ddl, get_foreign_keys, get_indexes, search_columns, list_views, describe_view, get_view_ddl
       query-tools.ts      execute_query, explain_query
+      streaming-tools.ts  streaming_query
       data-tools.ts       sample_data, get_table_stats
       routines/           list_routines, get_routine_ddl, list_triggers, get_trigger_ddl, list_events, get_event_ddl
       erd-tool.ts         generate_erd

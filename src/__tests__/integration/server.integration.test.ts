@@ -10,6 +10,9 @@
  * it via beforeAll/afterAll.
  */
 
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import path from "node:path";
+import { tmpdir } from "node:os";
 import { beforeAll, afterAll, describe, it, expect } from "vitest";
 import {
   MySqlContainer,
@@ -24,6 +27,7 @@ import {
 } from "../../connection.js";
 import type { DatabaseConfig } from "../../types.js";
 import { DatabaseConfigSchema } from "../../schema.js";
+import { handleStreamingQuery } from "../../tools/streaming-tools.js";
 
 const CONTAINER_START_TIMEOUT_MS = 120_000;
 
@@ -279,5 +283,123 @@ describe("schema introspection on a live MySQL", () => {
     const names = idx.map((r) => r.INDEX_NAME);
     expect(names).toContain("idx_email");
     expect(names).toContain("PRIMARY");
+  });
+});
+
+// ── streaming_query against the real container ─────────────────────
+
+describe("streaming_query — end-to-end against MySQL", () => {
+  const NAME = "ro_stream";
+  let outDir: string;
+
+  beforeAll(async () => {
+    await initConnection({ ...baseConfig, name: NAME, readonly: true });
+    outDir = await mkdtemp(path.join(tmpdir(), "qb-stream-itg-"));
+
+    // Seed enough rows that cap-stop and progress notifications have
+    // something to do. INSERT directly via root so the readonly
+    // connection's gate doesn't get in the way of the fixture.
+    const seed = await mysql.createConnection({
+      host: container.getHost(),
+      port: container.getPort(),
+      user: "root",
+      password: container.getRootPassword(),
+      database: "testdb",
+    });
+    try {
+      await seed.query(`
+        CREATE TABLE IF NOT EXISTS stream_fixture (
+          id INT PRIMARY KEY AUTO_INCREMENT,
+          payload VARCHAR(64) NOT NULL
+        )
+      `);
+      // 500 rows is plenty — enough to exercise the per-1000 progress
+      // path on a max_rows=200 cap, and to verify the truncation marker
+      // without making the container test slow.
+      const values: string[] = [];
+      for (let i = 0; i < 500; i++) {
+        values.push(`('row-${i}')`);
+      }
+      await seed.query(
+        `INSERT INTO stream_fixture (payload) VALUES ${values.join(",")}`,
+      );
+    } finally {
+      await seed.end();
+    }
+  }, CONTAINER_START_TIMEOUT_MS);
+
+  afterAll(async () => {
+    await rm(outDir, { recursive: true, force: true });
+  });
+
+  it("writes a full SELECT to NDJSON and returns a structured summary", async () => {
+    const target = path.join(outDir, "all.ndjson");
+    const result = await handleStreamingQuery({
+      connection: NAME,
+      query: "SELECT id, payload FROM stream_fixture ORDER BY id",
+      output_path: target,
+    });
+    expect("isError" in result && result.isError).toBeFalsy();
+
+    const summary = (result as { structuredContent: Record<string, unknown> })
+      .structuredContent;
+    expect(summary.rows_written).toBe(500);
+    expect(summary.truncated).toBe(false);
+    expect(summary.output_path).toBe(target);
+
+    const lines = (await readFile(target, "utf8")).trim().split("\n");
+    expect(lines).toHaveLength(500);
+    const first = JSON.parse(lines[0] ?? "") as { id: number; payload: string };
+    expect(first).toEqual({ id: 1, payload: "row-0" });
+  });
+
+  it("stops at max_rows and marks the result truncated", async () => {
+    const target = path.join(outDir, "capped.ndjson");
+    const result = await handleStreamingQuery({
+      connection: NAME,
+      query: "SELECT id, payload FROM stream_fixture ORDER BY id",
+      output_path: target,
+      max_rows: 50,
+    });
+    expect("isError" in result && result.isError).toBeFalsy();
+
+    const summary = (result as { structuredContent: Record<string, unknown> })
+      .structuredContent;
+    expect(summary.truncated).toBe(true);
+    expect(summary.rows_written).toBe(50);
+
+    const lines = (await readFile(target, "utf8")).trim().split("\n");
+    expect(lines).toHaveLength(50);
+  });
+
+  it("respects max_bytes when wide rows would blow the row cap budget", async () => {
+    const target = path.join(outDir, "bytes-capped.ndjson");
+    // Each row JSON-encodes to roughly 30+ bytes; max_bytes=200 should
+    // stop somewhere between 4 and 7 rows.
+    const result = await handleStreamingQuery({
+      connection: NAME,
+      query: "SELECT id, payload FROM stream_fixture ORDER BY id",
+      output_path: target,
+      max_bytes: 200,
+    });
+    expect("isError" in result && result.isError).toBeFalsy();
+    const summary = (result as { structuredContent: Record<string, unknown> })
+      .structuredContent;
+    expect(summary.truncated).toBe(true);
+    expect(summary.bytes_written).toBeLessThanOrEqual(200);
+    expect(summary.rows_written).toBeGreaterThan(0);
+  });
+
+  it("rejects a write SQL even on a writable connection", async () => {
+    await initConnection({ ...baseConfig, name: "rw_stream", readonly: false });
+    const target = path.join(outDir, "should-not-exist.ndjson");
+    const result = await handleStreamingQuery({
+      connection: "rw_stream",
+      query: "DELETE FROM stream_fixture WHERE id = 1",
+      output_path: target,
+    });
+    expect("isError" in result && result.isError).toBe(true);
+    // The file should not have been opened.
+    await expect(readFile(target, "utf8")).rejects.toThrow(/ENOENT/);
   });
 });

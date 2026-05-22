@@ -76,3 +76,42 @@ export const POOL_QUEUE_LIMIT = 10;
  * the global default.
  */
 export const DEFAULT_QUERY_TIMEOUT_MS = 30_000;
+
+/**
+ * Default row cap for `streaming_query` when the operator does not pass
+ * an explicit `max_rows`. 1M rows on a typical 200-byte average row is
+ * ~200MB on disk — large enough for real exports, small enough that a
+ * runaway query stops well before filling the volume.
+ */
+export const DEFAULT_STREAM_ROWS = 1_000_000;
+
+/**
+ * Hard ceiling on `streaming_query`'s `max_rows` argument. 100M is the
+ * point past which we'd rather the operator pull the data via a real
+ * ETL pipeline than through an MCP tool — both for runtime sanity and
+ * to keep the disk-DoS blast radius bounded.
+ */
+export const MAX_STREAM_ROWS_CEILING = 100_000_000;
+
+/**
+ * Default byte cap for `streaming_query`'s output file, in bytes (1 GiB).
+ * Pairs with the row cap — whichever is hit first stops the stream and
+ * marks the result `truncated: true`. The pair matters because a single
+ * wide row (BLOB/JSON) can blow past the disk budget long before the
+ * row count would.
+ */
+export const DEFAULT_STREAM_BYTES = 1024 * 1024 * 1024;
+
+/**
+ * Hard ceiling on `streaming_query`'s `max_bytes` argument (10 GiB).
+ * See [[MAX_STREAM_ROWS_CEILING]] — same reasoning, different units.
+ */
+export const MAX_STREAM_BYTES_CEILING = 10 * 1024 * 1024 * 1024;
+
+/**
+ * Emit a `notifications/progress` from `streaming_query` every Nth row.
+ * 1000 keeps the wire-traffic on a 1M-row export to ~1k notifications
+ * — frequent enough that an agent UI feels live, sparse enough not to
+ * dominate the bytes spent on the actual rows.
+ */
+export const STREAM_PROGRESS_ROW_INTERVAL = 1000;
