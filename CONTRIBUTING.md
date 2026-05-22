@@ -23,7 +23,7 @@ it up automatically). See SECURITY.md for the security model.
    ```bash
    pnpm lint        # ESLint
    pnpm build       # tsc strict
-   pnpm test        # vitest (currently 182 tests)
+   pnpm test        # vitest unit suite
    pnpm format      # optional — Prettier reformats
    ```
 
@@ -101,3 +101,28 @@ gh workflow run release.yml --ref main -f tag=vX.Y.Z
 
 The workflow checks out the supplied tag and verifies it matches
 `package.json.version` before publishing.
+
+### Merging PRs that touch `.github/workflows/`
+
+The default `gh auth login` OAuth flow does **not** request the
+`workflow` scope, so `gh pr merge` will fail on any PR that modifies
+files under `.github/workflows/` with:
+
+```
+GraphQL: refusing to allow an OAuth App to create or update workflow
+`.github/workflows/...` without `workflow` scope
+```
+
+Two ways to handle it:
+
+1. **Merge via the GitHub UI** — your browser session has full
+   permissions. Easiest one-off.
+2. **Re-auth `gh` with the `workflow` scope** if you want the CLI to
+   work for these PRs too:
+   ```bash
+   gh auth refresh -h github.com -s workflow
+   ```
+   Then `gh pr merge` works as normal.
+
+Dependabot bumps to GitHub Actions (e.g. `actions/checkout`,
+`pnpm/action-setup`) hit this regularly.
