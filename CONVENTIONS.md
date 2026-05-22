@@ -142,17 +142,20 @@ const READ_ONLY = {
 ### 2.5 Cancellation
 
 Long-running tools (queries, EXPLAIN, schema comparisons) must honour
-`extra.signal`. The pattern:
+`extra.signal`. The pattern is implemented once in
+`src/db/cancel.ts:withCancellableQuery`:
 
 1. Capture `CONNECTION_ID()` on the worker connection.
 2. On `signal.abort`, open a sibling connection and issue `KILL QUERY`.
-3. Distinguish "killed by us" from other errors so the client sees
-   `"Query was cancelled by the client"` rather than a raw MySQL error.
-4. Remove the abort listener in `finally`; release the worker connection
-   in `finally`.
+3. Distinguish "killed by us" from other errors — `withCancellableQuery`
+   throws `CancelledByClient` so the client sees a stable message
+   rather than a raw MySQL error.
+4. Remove the abort listener in `finally`; release the worker
+   connection in `finally`.
 
-This pattern is duplicated in `execute_query` and `explain_query` today —
-extract `createAbortListener(pool, connection)` and reuse it.
+Tools opt in by wrapping their DB work in `withCancellableQuery(pool,
+opts, fn)`. Don't reimplement the dance — `execute_query` and
+`explain_query` both go through this helper.
 
 ### 2.6 Progress reporting
 
@@ -339,19 +342,39 @@ These rules are not negotiable. Code that violates them does not merge.
 
 ---
 
-## 9. Things to enforce mechanically
+## 9. Mechanical enforcement
 
-These rules exist today but are enforced by review only. Move them
-into tooling as we get to them:
+The §1 layering, the §2 tool contract, and the §6 security invariants
+that *can* be checked statically are now enforced by tooling:
 
-- ESLint rule: no direct `console.*` outside `src/server/`.
-- ESLint rule: tool files must call `toolHandler` (no raw `async
-  (args) => ({ content: ... })`).
-- ESLint rule: no string interpolation of values into SQL template
-  literals (allow identifiers escaped via `escapeId` / `qualifiedTable`).
-- `dependency-cruiser` config: the layering rules in §1.
-- `tsc` `noUncheckedIndexedAccess` should be enabled and the resulting
-  call sites fixed.
+- **ESLint `no-console`** — global error, with file-level overrides only
+  for `src/log.ts` (the logger itself) and `src/server/cli.ts` (operator
+  CLI prints).
+- **ESLint `no-restricted-syntax`**:
+  - Tool handlers must be wrapped in `toolHandler` — raw arrow / function
+    expressions as the third argument to `server.registerTool` fail
+    lint.
+  - SQL template literals (anchored to start with a SQL keyword) may
+    not interpolate bare identifiers or member expressions. The
+    documented exceptions (`KILL QUERY <id>` with `Number.isInteger`
+    guards, `SHOW CREATE PROCEDURE` with a typed `type` union, `EXPLAIN`
+    with `isExplainSafe`-validated input) carry an inline
+    `eslint-disable` with the safety argument.
+- **`dependency-cruiser`** — encodes the §1 layering as build-time
+  rules: no circular imports, infra ⇏ tools, tools ⇏ transport,
+  `tools/index.ts` barrel-only, mysql2 only from `connection.ts` (plus
+  `query-tools` and `db/cancel`).
+- **`tsc` `--strict` + `noUncheckedIndexedAccess` +
+  `exactOptionalPropertyTypes`** — all on.
+
+What's still review-only:
+
+- The §4.2 "no `Record<string, unknown>` for query results" guideline —
+  catching this needs a custom ESLint rule that understands the
+  `queryWithTimeout<T>` type parameter site. Worth doing if review
+  starts missing it.
+- The §5.1 "always include context as the third arg to `log()`" rule —
+  same shape, same answer.
 
 ---
 

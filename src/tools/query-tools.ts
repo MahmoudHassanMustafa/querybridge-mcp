@@ -196,10 +196,17 @@ export function registerQueryTools(server: McpServer) {
         async (worker) => {
           if (db) await worker.query(`USE ${escapeId(db)}`);
 
+          // `query` was validated by isExplainSafe at the top of the
+          // handler — only SELECT/WITH, no INTO OUTFILE/DUMPFILE, no
+          // write keywords. `fmt` is a typed literal union. MySQL
+          // refuses `?` placeholders for EXPLAIN's wrapped statement, so
+          // interpolation is unavoidable.
+          /* eslint-disable no-restricted-syntax */
           const explainSql =
             fmt === "TRADITIONAL"
               ? `EXPLAIN ${query}`
               : `EXPLAIN FORMAT=${fmt} ${query}`;
+          /* eslint-enable no-restricted-syntax */
 
           const [rows] = await worker.execute({ sql: explainSql, timeout });
           const resultRows = rows as Array<Record<string, unknown>>;

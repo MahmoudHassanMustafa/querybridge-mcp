@@ -102,6 +102,9 @@ export class MalformedExplainOutput extends QueryBridgeError {
     "Retry with format=TRADITIONAL or format=TREE for a non-JSON plan.";
 
   constructor(reason: string) {
+    // English error message that happens to start with "EXPLAIN" — the
+    // SQL-template-literal lint rule is a false positive here.
+    // eslint-disable-next-line no-restricted-syntax
     super(`EXPLAIN returned malformed JSON: ${reason}`);
   }
 }

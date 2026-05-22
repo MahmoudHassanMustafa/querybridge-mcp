@@ -84,12 +84,11 @@ export function registerDataTools(server: McpServer) {
     toolHandler("sample_data", async ({ connection, table, database, limit }) => {
       const r = resolveDb(connection, database);
       if ("error" in r) return r.error;
-      const qt = qualifiedTable(r.db, table);
       const n = limit ?? 5;
 
       const data = await queryWithTimeout<Array<Record<string, unknown>>>(
         connection,
-        `SELECT * FROM ${qt} LIMIT ?`,
+        `SELECT * FROM ${qualifiedTable(r.db, table)} LIMIT ?`,
         [n],
       );
 
