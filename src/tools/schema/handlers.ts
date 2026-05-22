@@ -63,10 +63,22 @@ export const handleDescribeTable = toolHandler(
     const columns = await describeTableColumns(connection, r.db, table);
     const createRow = await getCreateTableRaw(connection, r.db, table);
     if (createRow && !createRow["Create Table"] && createRow["Create View"]) {
-      return toolError(
-        `"${table}" is a view, not a table.`,
-        "Use describe_view or get_view_ddl instead.",
-      );
+      return toolError(`"${table}" is a view, not a table.`, {
+        code: "OBJECT_IS_VIEW",
+        hint: "Use describe_view or get_view_ddl instead.",
+        suggestions: [
+          {
+            tool: "describe_view",
+            reason: "introspect the view's columns and underlying SELECT",
+            args: { connection, database: r.db, view: table },
+          },
+          {
+            tool: "get_view_ddl",
+            reason: "get the CREATE VIEW DDL for this view",
+            args: { connection, database: r.db, view: table },
+          },
+        ],
+      });
     }
     const createStatement = createRow?.["Create Table"] ?? "";
     const indexes = await showIndexes(connection, r.db, table);

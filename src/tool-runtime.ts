@@ -1,5 +1,29 @@
 import { log, newTraceId, runWithContext } from "./log.js";
-import { QueryBridgeError } from "./errors.js";
+import { QueryBridgeError, type ToolSuggestion } from "./errors.js";
+
+export type { ToolSuggestion } from "./errors.js";
+
+/**
+ * Options accepted by the second-arg-as-object form of `toolError`.
+ * The plain-string form (`toolError("msg", "hint")`) stays supported
+ * via overload so older call sites keep working.
+ */
+export interface ToolErrorOpts {
+  /** Operator-facing remediation text appended to the message. */
+  hint?: string;
+  /**
+   * Stable identifier surfaced in `structuredContent.code`. Lets
+   * agents branch on a fixed token instead of pattern-matching the
+   * human-readable message.
+   */
+  code?: string;
+  /**
+   * Structured "what to call next" pointers. Each one becomes a bullet
+   * in the rendered text AND lands in `structuredContent.suggestions`
+   * for clients that consume modern MCP structured content.
+   */
+  suggestions?: readonly ToolSuggestion[];
+}
 
 // ── Shared tool annotations ───────────────────────────────────────
 
@@ -68,14 +92,70 @@ export function toolOk(
  * Reserve `toolError` for *anticipated* failures the tool decides to
  * surface. System errors (MySQL exceptions, dropped connections)
  * should throw — `toolHandler` catches and sanitizes them.
+ *
+ * Two call shapes, both supported:
+ *
+ *   toolError("X not found")
+ *   toolError("X not found", "Try Y instead.")           // legacy hint-only
+ *   toolError("X not found", { hint, code, suggestions }) // structured form
+ *
+ * The structured form lets a tool emit machine-actionable next-step
+ * pointers via `structuredContent.suggestions` while keeping the
+ * rendered text equivalent to what a human reader would see.
  */
-export function toolError(message: string, hint?: string) {
-  const parts = [message];
-  if (hint) parts.push(`Hint: ${hint}`);
-  return {
+export function toolError(message: string, hint?: string): ToolErrorResult;
+export function toolError(message: string, opts: ToolErrorOpts): ToolErrorResult;
+export function toolError(
+  message: string,
+  hintOrOpts?: string | ToolErrorOpts,
+): ToolErrorResult {
+  const opts: ToolErrorOpts =
+    typeof hintOrOpts === "string"
+      ? { hint: hintOrOpts }
+      : (hintOrOpts ?? {});
+
+  const parts: string[] = [message];
+  if (opts.hint) parts.push(`Hint: ${opts.hint}`);
+
+  const suggestions = opts.suggestions ?? [];
+  if (suggestions.length > 0) {
+    parts.push(""); // blank line separates the bullet list from the hint
+    parts.push("Try one of these tools next:");
+    for (const s of suggestions) {
+      const argsStr =
+        s.args && Object.keys(s.args).length > 0
+          ? ` (args: ${JSON.stringify(s.args)})`
+          : "";
+      parts.push(`  - ${s.tool} — ${s.reason}${argsStr}`);
+    }
+  }
+
+  const result: ToolErrorResult = {
     content: [{ type: "text" as const, text: parts.join("\n") }],
     isError: true as const,
   };
+  // Only emit structuredContent when there's actually something
+  // machine-actionable to deliver — empty `{}` would just bloat the
+  // wire response for clients that don't consume it.
+  if (opts.code || suggestions.length > 0) {
+    const sc: Record<string, unknown> = {};
+    if (opts.code) sc.code = opts.code;
+    if (suggestions.length > 0) sc.suggestions = suggestions;
+    result.structuredContent = sc;
+  }
+  return result;
+}
+
+interface ToolErrorResult {
+  content: Array<{ type: "text"; text: string }>;
+  isError: true;
+  structuredContent?: Record<string, unknown>;
+  // The SDK's tool-handler return type carries an open index signature
+  // (so handlers can stash extra fields the spec doesn't model). Keep
+  // ours assignable by declaring the same shape — the discriminating
+  // `isError: true` literal still survives because it's narrower than
+  // `unknown` and TypeScript preserves it.
+  [key: string]: unknown;
 }
 
 /**
@@ -182,9 +262,12 @@ export function toolHandler<A extends Record<string, unknown>>(
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
 
-        // QueryBridgeError carries a stable code + hint. Surface them
-        // verbatim and tag the log line with the code so operators can
-        // grep for "code=READ_ONLY_VIOLATION" instead of fragile message
+        // QueryBridgeError carries a stable code + hint, and optionally
+        // structured next-step suggestions. Forward all three so the
+        // agent gets the same machine-actionable response shape it
+        // would have if the tool had returned toolError directly.
+        // Tag the log line with the code so operators can grep for
+        // "code=READ_ONLY_VIOLATION" instead of fragile message
         // substrings.
         if (err instanceof QueryBridgeError) {
           log("warn", "tool rejected", {
@@ -192,7 +275,12 @@ export function toolHandler<A extends Record<string, unknown>>(
             elapsedMs: Date.now() - start,
             code: err.code,
           });
-          return toolError(err.message, err.hint);
+          const opts: ToolErrorOpts = { code: err.code };
+          if (err.hint) opts.hint = err.hint;
+          if (err.suggestions && err.suggestions.length > 0) {
+            opts.suggestions = err.suggestions;
+          }
+          return toolError(err.message, opts);
         }
 
         log("warn", "tool failed", {

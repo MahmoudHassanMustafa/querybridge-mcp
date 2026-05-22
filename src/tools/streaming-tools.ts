@@ -296,13 +296,29 @@ export async function handleStreamingQuery(
   if (!isExplainSafe(query)) {
     return toolError(
       "streaming_query only accepts SELECT (and read-only WITH) statements.",
-      "Write SQL is unsupported even on writable connections — the side-effect is the file, not the table.",
+      {
+        code: "STREAMING_QUERY_NOT_SELECT",
+        hint: "Write SQL is unsupported even on writable connections — the side-effect is the file, not the table.",
+        suggestions: [
+          {
+            tool: "execute_query",
+            reason:
+              "if the SQL needs to mutate data, run it via execute_query against a connection that has readonly: false",
+            args: { connection, query },
+          },
+        ],
+      },
     );
   }
 
   const pathCheck = await validateOutputPath(output_path, overwrite === true);
   if (!pathCheck.ok) {
-    return toolError(pathCheck.reason ?? "output_path is invalid.");
+    // Path validation failures are user-input issues without a clear
+    // next-tool to suggest — the agent needs to pick a different path
+    // string, not call another tool. Keep the response plain.
+    return toolError(pathCheck.reason ?? "output_path is invalid.", {
+      code: "STREAMING_QUERY_INVALID_PATH",
+    });
   }
 
   const tmpPath = pathCheck.resolved + ".tmp";

@@ -19,9 +19,40 @@
  * can recognise the family in one `instanceof` check.
  */
 
+/**
+ * Structured "what to try next" pointer carried by a failed tool
+ * response. The plain-text `hint` is for human readers; `ToolSuggestion`
+ * is for the agent — pre-filled args mean the LLM doesn't have to
+ * re-derive context from the failure message before calling the
+ * recommended tool.
+ *
+ * Optional everywhere — only worth adding where the next action is
+ * concrete enough to recommend. "Try something else" suggestions are
+ * worse than no suggestion at all because they erode trust in the
+ * mechanism.
+ */
+export interface ToolSuggestion {
+  /** Name of a registered tool (e.g. "list_connections"). */
+  tool: string;
+  /** One-line reason the agent would invoke this tool next. */
+  reason: string;
+  /**
+   * Args to pre-fill on the suggested call. Use only when the value is
+   * already known at error construction time (e.g. the connection name
+   * that failed lookup); omit otherwise rather than guess.
+   */
+  args?: Record<string, unknown>;
+}
+
 export abstract class QueryBridgeError extends Error {
   abstract readonly code: string;
   abstract readonly hint?: string | undefined;
+  /**
+   * Optional structured next-step pointers, surfaced in
+   * `structuredContent.suggestions` on the tool response. See
+   * [[ToolSuggestion]].
+   */
+  readonly suggestions?: readonly ToolSuggestion[];
 
   constructor(message: string) {
     super(message);
@@ -36,6 +67,12 @@ export abstract class QueryBridgeError extends Error {
 export class ConnectionNotFound extends QueryBridgeError {
   readonly code = "CONNECTION_NOT_FOUND";
   readonly hint = "Run list_connections to see configured connections.";
+  override readonly suggestions: readonly ToolSuggestion[] = [
+    {
+      tool: "list_connections",
+      reason: "enumerate the connections that are actually registered",
+    },
+  ];
 
   constructor(name: string) {
     super(`Connection "${name}" not found or not initialized`);
@@ -52,6 +89,20 @@ export class DatabaseNotResolved extends QueryBridgeError {
   readonly code = "DATABASE_NOT_RESOLVED";
   readonly hint =
     "Specify a database parameter or call use_database first to pin a default.";
+  // Intentionally NOT pre-filling `args.connection` here — DatabaseNotResolved
+  // is thrown deep in resolveDb without the connection name in scope; passing
+  // {} would mislead the agent into thinking we knew which connection it was.
+  // The agent already knows the connection from the failing call.
+  override readonly suggestions: readonly ToolSuggestion[] = [
+    {
+      tool: "list_databases",
+      reason: "see the databases available on this connection",
+    },
+    {
+      tool: "use_database",
+      reason: "pin a default database so subsequent tools don't need to pass one",
+    },
+  ];
 
   constructor() {
     super("No database selected.");
@@ -67,6 +118,13 @@ export class ReadOnlyViolation extends QueryBridgeError {
   readonly code = "READ_ONLY_VIOLATION";
   readonly hint =
     'Set "readonly": false in the connection config to enable writes.';
+  override readonly suggestions: readonly ToolSuggestion[] = [
+    {
+      tool: "list_connections",
+      reason:
+        "find a connection configured with readonly: false to run the write against",
+    },
+  ];
 
   constructor(connection: string, detail = "") {
     super(
@@ -100,6 +158,14 @@ export class MalformedExplainOutput extends QueryBridgeError {
   readonly code = "MALFORMED_EXPLAIN_OUTPUT";
   readonly hint =
     "Retry with format=TRADITIONAL or format=TREE for a non-JSON plan.";
+  override readonly suggestions: readonly ToolSuggestion[] = [
+    {
+      tool: "explain_query",
+      reason:
+        "fall back to the TRADITIONAL plan format, which doesn't depend on the server returning well-formed JSON",
+      args: { format: "TRADITIONAL" },
+    },
+  ];
 
   constructor(reason: string) {
     // English error message that happens to start with "EXPLAIN" — the
