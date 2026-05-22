@@ -1,5 +1,58 @@
 # querybridge-mcp
 
+## 0.9.0
+
+### Minor Changes
+
+- 5801e7c: **New tool: `compare_schema_file`.** Diff a checked-in `.sql` schema file against a live database — the CI workflow that catches a developer adding a column in a migration but forgetting to update the canonical schema-as-source-of-truth file.
+
+  **How it works:** loads the file into a temp database (`_qbmcp_check_<random>`) on a writable scratch connection, delegates to the same comparison engine `compare_schemas` uses, and drops the temp DB on the way out. MySQL parses the DDL natively — no new SQL-parser dependency.
+
+  **Inputs:**
+  - `live_connection` (string, required)
+  - `live_database` (string, optional) — uses the connection's active db when omitted
+  - `scratch_connection` (string, required) — must be configured with `readonly: false`
+  - `schema_path` (string, required) — relative paths resolve against the server's cwd
+  - `tables`, `scope`, `summaryOnly` — same semantics as `compare_schemas`
+
+  **Safety:**
+  - Refuses if `scratch_connection` is read-only (clear pre-flight error with a `list_connections` suggestion).
+  - Refuses `schema_path` under `/proc`, `/dev`, `/sys`, `/boot`; refuses null bytes; refuses directories; refuses files > 16 MiB.
+  - Temp DB has a `_qbmcp_check_` prefix + 12-hex-char suffix so concurrent CI runs don't collide. Always dropped in `finally` — verified by the integration suite.
+  - Per-statement error reporting: if the load fails on statement N, the response says "statement N of M" with a head of the offending SQL so an operator can find the line at fault without re-reading the file.
+
+  **V1 limitations** (documented in the tool's source comments):
+  - No `DELIMITER` support — stored routines / triggers with `;` inside their bodies won't split cleanly. Workaround: drop those from the file or load them through a different tool.
+  - No data import — only DDL. INSERTs in the file aren't needed for schema comparison.
+
+  **Refactor:** the comparison engine moved out of `compare/index.ts` into `compare/engine.ts` so both `compare_schemas` (two live DBs) and `compare_schema_file` (file vs live DB) call into it. No behaviour change to `compare_schemas`.
+
+  **New shared primitive:** `src/sql/split.ts` (14 unit tests) — a comment- and quote-aware SQL statement splitter. Public-API stable; available for any future tool that needs to apply a multi-statement script through the pool's `multipleStatements: false` connections.
+
+  **Tests:** 10 new unit tests (splitter cadence/quoting/comments, path validation, pre-load gates, scratch-readonly refusal) + 5 new integration tests against MySQL 8.4 (matching schema → inSync, extra table → drift detected, file-path source label, broken-DDL error with statement index, temp DB cleanup verified by SHOW DATABASES delta).
+
+### Patch Changes
+
+- f3ed48d: **Internal: tagged `sql\`\`` template helper.** New `src/sql/template.ts` exports `sql`, `id`, and `raw` for assembling parameterized SQL with explicit identifier escaping and explicit-unsafe integer interpolation.
+
+  **Why:** three sites in the codebase need to inline a value MySQL doesn't accept `?` placeholders for — `KILL QUERY <id>`, `KILL CONNECTION <id>`, and `SHOW CREATE PROCEDURE/FUNCTION <db>.<name>`. Each previously used `// eslint-disable-next-line no-restricted-syntax` to silence the SQL-template lint rule. The new helper replaces those bypasses with `raw()` (runtime-checked finite integer) and `id()` (`escapeId`-wrapped identifier), so the unsafe-by-necessity intent is visible at the call site instead of being a silenced lint warning.
+
+  **API:**
+
+  \`\`\`ts
+  import { sql, id, raw } from "./sql/template.js";
+
+  await worker.query(sql\`KILL QUERY \${raw(connectionId)}\`);
+  await worker.query(sql\`SHOW CREATE PROCEDURE \${id(db)}.\${id(name)}\`);
+  await worker.query(sql\`SELECT \* FROM users WHERE id = \${userId}\`); // userId → ? param
+  \`\`\`
+
+  Returns `{ sql: string, values: unknown[] }`, directly compatible with mysql2's `query()` / `execute()` QueryOptions overload.
+
+  **No public behaviour change.** All migrated sites send the exact same SQL bytes to MySQL — the helper just makes how those bytes are assembled type-safe and lint-clean. Verified by the existing KILL-QUERY integration test still passing against MySQL 8.4.
+
+  **Tests:** 16 new unit tests for the helper (plain interpolation → parameter, `id()` identifier escaping, `raw()` integer guard, mixed slots in order, edge cases: null/undefined/NaN/Infinity/string-sneak-through).
+
 ## 0.8.0
 
 ### Minor Changes
