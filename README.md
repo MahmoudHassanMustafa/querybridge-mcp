@@ -551,6 +551,7 @@ Prompts appear in the MCP prompt list. Select one and provide the required argum
 - **Cancellable queries.** If the MCP client cancels a request, `execute_query` and `explain_query` issue `KILL QUERY` on a sibling connection so the in-flight statement is stopped at the server, not just abandoned by the client.
 - **Tool annotations.** Every tool advertises MCP `readOnlyHint` / `destructiveHint` / `idempotentHint` so clients (and humans) can gate confirmation prompts appropriately.
 - **Structured results.** Tools return both human-readable text AND `structuredContent` JSON, so clients that support the modern MCP spec can render rich tables instead of monospace ASCII.
+- **LLM-friendly errors.** Tool failures carry a stable `code` and a list of `suggestions` (`{ tool, reason, args? }`) in `structuredContent`, plus a rendered "Try one of these tools next:" bullet list in the text body. When the failing call already knew the relevant `connection` / `database` / `table`, those values are pre-filled in the suggested invocation — the agent doesn't re-derive context from the error message.
 - **Audit logging.** Every tool invocation is logged to stderr with the connection, elapsed ms, and pre-condition rejections — so operators can see exactly what the agent did. Logs are also forwarded to the MCP client via `notifications/message` (per spec) so connected clients see them inline.
 - **Config file in .gitignore.** The `config.json` file containing credentials is excluded from version control.
 

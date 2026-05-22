@@ -20,7 +20,17 @@ export const handleUseDatabase = toolHandler(
     database: string;
   }) => {
     if (!(await databaseExists(connection, database))) {
-      return toolError(`Database "${database}" not found`);
+      return toolError(`Database "${database}" not found`, {
+        code: "DATABASE_NOT_FOUND",
+        hint: "Run list_databases on this connection to see what exists.",
+        suggestions: [
+          {
+            tool: "list_databases",
+            reason: "enumerate databases visible on this connection",
+            args: { connection },
+          },
+        ],
+      });
     }
     setActiveDatabase(connection, database);
     return toolOk(`Switched to database "${database}" on ${connection}`, {
