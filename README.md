@@ -198,9 +198,60 @@ Client config:
 - **No CORS by default.** Same-origin RPC is the norm for MCP; cross-origin is opt-in.
 - **All security guarantees of the stdio transport still apply** — read-only enforcement, LOAD INFILE block, KILL QUERY cancellation, error sanitization. The HTTP layer is just a different envelope.
 
-**Behind a reverse proxy (nginx, Caddy, etc.):**
+**Production deployment (HTTP):**
 
-Run the server on loopback (`--host=127.0.0.1`) and let the proxy handle TLS + external exposure. The proxy must forward the `Authorization` header. Don't add `--allowed-hosts` in this setup — the proxy already filters Host.
+The defaults — loopback + bearer token — are designed for the "operator and agent on the same host" trust boundary. For anything beyond that (LAN, public internet, multi-tenant access), the bearer-only model is necessary but not sufficient. Bearer tokens travel on every request, never expire, and grant access to every tool on every configured connection. The standard recipe to harden this is to **front the server with a TLS-terminating auth proxy** and keep querybridge itself on loopback.
+
+What the bearer token alone does NOT protect against, and how to address each:
+
+| Gap | Mitigation |
+|---|---|
+| **Wire interception.** The server speaks plaintext HTTP; an observer on any non-loopback network captures the token. | Terminate TLS at a reverse proxy (Caddy / nginx / Cloudflare) and run querybridge on loopback. |
+| **No expiry / rotation.** A token leaked once is valid until the next restart. | Rotate by restarting the server with a new env var. For real rotation discipline, put an OAuth2/OIDC proxy in front that issues short-lived service tokens. |
+| **No scope.** One token → every tool, every connection. A leaked token can `execute_query` `DROP TABLE` against any writable connection. | Set `"readonly": true` on every connection that doesn't need writes. This is the actual blast-radius control — far stronger than auth alone. |
+| **No replay protection.** A captured request + header is replayable. | TLS prevents the capture in the first place. |
+| **No rate limiting.** | Reverse-proxy-level rate limits (`limit_req` in nginx, `rate_limit` in Caddy). |
+| **No per-user audit.** Every call logs as the same anonymous bearer. | OIDC proxy that forwards a verified `X-Forwarded-User` header you can route on. querybridge itself does not currently consume this — but the network-edge identity is the right place for it. |
+
+**Minimal TLS-terminating proxy (Caddy):**
+
+```caddyfile
+mcp.example.com {
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+Start querybridge alongside it:
+
+```bash
+QUERYBRIDGE_MCP_HTTP_TOKEN=$(openssl rand -base64 32) \
+querybridge-mcp-server --transport=http --host=127.0.0.1 --port=8080
+```
+
+Caddy obtains and renews the certificate automatically. Don't pass `--allowed-hosts` in this layout — Caddy already filters incoming `Host`, and querybridge sees the proxy connection on loopback. Clients connect to `https://mcp.example.com/mcp` with `Authorization: Bearer <token>`.
+
+**Stronger identity (OAuth2 / OIDC):**
+
+When you need per-user identity, SSO revocation, or short-lived tokens, put `oauth2-proxy`, [Pomerium](https://www.pomerium.com/), or [Cloudflare Access](https://www.cloudflare.com/products/zero-trust/access/) in front of the reverse proxy. The auth proxy verifies the user against your IdP, then injects a static service token toward querybridge:
+
+```
+Internet → Cloudflare Access → Caddy → querybridge (loopback, --no-auth)
+            (verifies user)              ↑ trusts the upstream layer
+```
+
+Pass `--no-auth` to querybridge in this layout — the upstream proxy is the security boundary, and a double-token check just confuses operations. Keep `--host=127.0.0.1` so the only path to querybridge is through the proxy.
+
+**Defense-in-depth checklist for any HTTP deployment:**
+
+- [ ] TLS terminated by something in front (querybridge itself does not do TLS).
+- [ ] querybridge bound to `127.0.0.1` — never `0.0.0.0` on a public interface.
+- [ ] Every connection that doesn't strictly need writes has `"readonly": true`.
+- [ ] Strong token (`openssl rand -base64 32` or stronger), or `--no-auth` *only* when the upstream proxy is the trust boundary.
+- [ ] Reverse-proxy rate limits set per your traffic shape.
+- [ ] Network ACLs restrict who can reach the proxy (VPN / VPC / Tailscale / Cloudflare Access — pick one).
+- [ ] Logs from querybridge (stderr) shipped somewhere you can audit. Every tool invocation is logged with tool name, connection, and elapsed ms.
+
+querybridge is intentionally not an identity provider — building JWT verification, key rotation, and per-user scoping into the server would duplicate purpose-built infrastructure. The pattern the industry has settled on for tools like this is "delegate auth to a sidecar," which is why the recommended path is a reverse proxy rather than additional flags.
 
 **Container example:**
 
