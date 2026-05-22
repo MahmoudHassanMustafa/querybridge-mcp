@@ -15,6 +15,51 @@ A Model Context Protocol (MCP) server that connects Claude Code to MySQL databas
 - **Read-only by default** with per-connection write control
 - **CLI** for managing connections without editing JSON
 
+## How it fits together
+
+```mermaid
+flowchart LR
+  C["MCP client<br/>(Claude Code, Cursor, …)"]
+  S["querybridge-mcp<br/>(stdio JSON-RPC)"]
+  P["mysql2 connection pool<br/>(per connection)"]
+  T["SSH tunnel<br/>(optional, ssh2)"]
+  DB[("MySQL / MariaDB")]
+
+  C -- stdin/stdout --> S
+  S --> P
+  P -- direct TCP --> DB
+  P -. via 127.0.0.1 .-> T
+  T -. forward to remote :3306 .-> DB
+
+  classDef ext fill:#eef,stroke:#446,color:#000
+  classDef int fill:#efe,stroke:#464,color:#000
+  classDef opt fill:#fee,stroke:#644,color:#000,stroke-dasharray:4 3
+  class C ext
+  class S,P int
+  class T opt
+  class DB ext
+```
+
+The MCP client speaks JSON-RPC over the server's stdin/stdout. Each configured connection gets its own mysql2 pool — when SSH is configured the pool talks to a local ephemeral port that the ssh2 tunnel forwards to the remote MySQL. Tools call the pool; the pool checks out a connection, runs the query, and the result flows back as a tool response (plus an MCP `notifications/message` echo for observability).
+
+## How it compares
+
+There are several MCP-over-MySQL options. The honest pitch:
+
+| Capability | `querybridge-mcp` | Typical alternative |
+|---|---|---|
+| Read-only by default (whitelist + server-side `SET SESSION transaction_read_only`) | ✅ | Usually whitelist only, or off by default |
+| `LOAD DATA LOCAL INFILE` blocked client-side | ✅ | Rarely addressed |
+| SSH tunnel built in (with host-fingerprint pinning) | ✅ | Often requires an external `ssh -L` |
+| Secrets indirection (`{ env: }` / `{ file: }`) | ✅ | Usually plaintext in config |
+| Cancellation via MCP signal → `KILL QUERY` | ✅ | Typically abandoned client-side |
+| Cross-database schema diff (`compare_schemas`) | ✅ | Rare |
+| Multi-arch Docker image with SBOM + Sigstore provenance | ✅ | Sometimes one platform only |
+| Integration tests against real MySQL (Testcontainers) | ✅ | Often unit tests only |
+| Tool annotations + `structuredContent` (modern MCP spec) | ✅ | Many still on the legacy `server.tool()` API |
+
+If you need write access for migrations, raw replication setup, or admin operations beyond `KILL QUERY`, you may want a tool with looser defaults. querybridge-mcp leans hard on "give Claude a database without giving it the ability to destroy your data."
+
 ## Installation
 
 Install globally from npm:
