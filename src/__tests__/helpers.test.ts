@@ -453,7 +453,10 @@ describe("toolHandler", () => {
     expect(res.content[0].text).toBe("fine");
     expect(stderrSpy).toHaveBeenCalledTimes(1);
     const line = stderrSpy.mock.calls[0][0] as string;
-    expect(line).toMatch(/^\[querybridge-mcp\] INFO demo /);
+    // toolName is in the merged JSON context (via runWithContext),
+    // not interpolated into the message.
+    expect(line).toMatch(/^\[querybridge-mcp\] INFO tool invoked /);
+    expect(line).toContain('"toolName":"demo"');
     expect(line).toContain('"connection":"prod"');
     expect(line).toContain('"elapsedMs":');
   });
@@ -466,8 +469,10 @@ describe("toolHandler", () => {
     expect(res.content[0].text).toBe("precondition failed");
     expect("isError" in res && res.isError).toBe(true);
     expect(stderrSpy).toHaveBeenCalledTimes(1);
-    expect(stderrSpy.mock.calls[0][0]).toMatch(/^\[querybridge-mcp\] WARN demo /);
-    expect(stderrSpy.mock.calls[0][0]).toContain('"rejected":true');
+    const line = stderrSpy.mock.calls[0][0] as string;
+    expect(line).toMatch(/^\[querybridge-mcp\] WARN tool invoked /);
+    expect(line).toContain('"toolName":"demo"');
+    expect(line).toContain('"rejected":true');
   });
 
   it("catches throws, logs to stderr, returns sanitized toolError", async () => {
@@ -476,13 +481,16 @@ describe("toolHandler", () => {
     });
     const res = await wrapped({ connection: "prod" });
     expect("isError" in res && res.isError).toBe(true);
+    // User-facing error keeps the tool name for clarity (no access
+    // to the trace context on the client side).
     expect(res.content[0].text).toBe(
       "my_tool failed: Access denied for user '***'@'***'",
     );
     expect(stderrSpy).toHaveBeenCalledTimes(1);
     const logged = stderrSpy.mock.calls[0][0] as string;
-    // Operator-side log carries the RAW (unsanitized) error
-    expect(logged).toContain("my_tool failed");
+    // Stable log message, toolName in ctx, raw (unsanitized) error too
+    expect(logged).toMatch(/^\[querybridge-mcp\] WARN tool failed /);
+    expect(logged).toContain('"toolName":"my_tool"');
     expect(logged).toContain("'root'@'10.1.2.3'");
     expect(logged).toContain('"connection":"prod"');
   });

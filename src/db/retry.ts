@@ -53,8 +53,9 @@ export async function withTransientRetry<T>(
     return await fn();
   } catch (err) {
     if (!isTransient(err)) throw err;
-    log("warn", `${context.operation} hit transient error; retrying once`, {
+    log("warn", "transient error; retrying once", {
       connection: context.connection,
+      operation: context.operation,
       code: (err as { code?: string }).code,
       message: err instanceof Error ? err.message : String(err),
     });

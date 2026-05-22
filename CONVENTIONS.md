@@ -366,15 +366,24 @@ that *can* be checked statically are now enforced by tooling:
   `query-tools` and `db/cancel`).
 - **`tsc` `--strict` + `noUncheckedIndexedAccess` +
   `exactOptionalPropertyTypes`** — all on.
+- **In-project ESLint plugin** (`eslint-plugins/local.js`):
+  - `local/no-record-unknown-query-result` — flags
+    `queryWithTimeout<Array<Record<string, unknown>>>` and friends.
+    Define a concrete row type next to the SQL (§4.2). The narrow
+    exception is `sample_data` where the schema is intentionally
+    unknown — `eslint-disable` with a justification.
+  - `local/log-message-no-interpolation` — flags `log("warn", \`failed
+    for ${name}\`)`. Variables go in the third-arg context object so
+    they appear as separate JSON fields next to `traceId` / `toolName`
+    (§5.1).
 
-What's still review-only:
+Everything in CONVENTIONS.md that can be checked statically is now
+checked statically. Things still left to taste / review:
 
-- The §4.2 "no `Record<string, unknown>` for query results" guideline —
-  catching this needs a custom ESLint rule that understands the
-  `queryWithTimeout<T>` type parameter site. Worth doing if review
-  starts missing it.
-- The §5.1 "always include context as the third arg to `log()`" rule —
-  same shape, same answer.
+- Naming (a tool called `nuke_database` would pass every rule above).
+- Per-tool annotation accuracy (does this tool *really* belong with
+  `readOnlyHint: true`?).
+- Integration-test happy-path coverage (§8) — easy to skip in a hurry.
 
 ---
 
