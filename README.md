@@ -354,7 +354,7 @@ Or with custom certificates:
 
 | Tool | Description |
 |------|-------------|
-| `compare_schemas` | Diff two databases (potentially across connections). Reports tables / columns / indexes / foreign keys that exist only in source, only in target, or differ. Restrict by `tables` filter or `scope` (`["tables", "indexes"]` for a fast subset). Emits MCP progress notifications for clients that request them. |
+| `compare_schemas` | Diff two databases (potentially across connections). Reports drift across **9 aspects**: tables, table attributes (engine/charset/**partitioning**), columns (incl. comments, generated cols), indexes (incl. MySQL 8 invisible indexes, functional indexes, prefix lengths), foreign keys, views, routines, triggers, events. SQL bodies are whitespace-normalized; int display widths are normalized for cross-version (5.7 ↔ 8.0+) sanity. Restrict with `tables` filter or `scope` for cheaper runs. `summaryOnly: true` keeps huge diffs in context budget. Emits MCP progress notifications per scope. Honors client-side cancellation. |
 
 ## Resources
 
