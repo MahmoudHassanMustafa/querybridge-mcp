@@ -7,6 +7,7 @@ import { registerRoutinesTools } from "./routines/index.js";
 import { registerErdTool } from "./erd-tool.js";
 import { registerAdminTools } from "./admin-tools.js";
 import { registerCompareTools } from "./compare/index.js";
+import { registerCompareSchemaFileTool } from "./compare-schema-file.js";
 import { registerStreamingTools } from "./streaming-tools.js";
 
 export function registerTools(server: McpServer) {
@@ -18,5 +19,6 @@ export function registerTools(server: McpServer) {
   registerErdTool(server);
   registerAdminTools(server);
   registerCompareTools(server);
+  registerCompareSchemaFileTool(server);
   registerStreamingTools(server);
 }

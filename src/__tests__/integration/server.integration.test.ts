@@ -77,9 +77,15 @@ beforeAll(async () => {
     INSERT INTO users (email) VALUES ('alice@example.com'), ('bob@example.com');
     INSERT INTO orders (user_id, total) VALUES (1, 99.99), (1, 12.50), (2, 250.00);
   `);
-  // Grant our test user PROCESS so list_processes / KILL work against
-  // its own threads.
-  await seed.query("GRANT PROCESS ON *.* TO 'testuser'@'%'");
+  // Grant our test user:
+  //   - PROCESS so list_processes / KILL work against its own threads.
+  //   - CREATE/DROP at the *.* level so compare_schema_file can create
+  //     and drop a temp database on the scratch connection. MySQL
+  //     ships the container's default user with rights to *its own*
+  //     database only — global DDL needs an explicit grant.
+  await seed.query(
+    "GRANT PROCESS, CREATE, DROP ON *.* TO 'testuser'@'%'",
+  );
   await seed.query("FLUSH PRIVILEGES");
   await seed.end();
 }, CONTAINER_START_TIMEOUT_MS);
@@ -401,5 +407,144 @@ describe("streaming_query — end-to-end against MySQL", () => {
     expect("isError" in result && result.isError).toBe(true);
     // The file should not have been opened.
     await expect(readFile(target, "utf8")).rejects.toThrow(/ENOENT/);
+  });
+});
+
+// ── compare_schema_file against the real container ─────────────────
+
+import { handleCompareSchemaFile } from "../../tools/compare-schema-file.js";
+import { writeFile as fsWriteFile } from "node:fs/promises";
+
+describe("compare_schema_file — end-to-end against MySQL", () => {
+  const LIVE = "ro_cmpf";
+  const SCRATCH = "rw_cmpf";
+  let outDir: string;
+
+  beforeAll(async () => {
+    await initConnection({ ...baseConfig, name: LIVE, readonly: true });
+    await initConnection({ ...baseConfig, name: SCRATCH, readonly: false });
+    outDir = await mkdtemp(path.join(tmpdir(), "qb-cmpf-itg-"));
+  }, CONTAINER_START_TIMEOUT_MS);
+
+  afterAll(async () => {
+    await rm(outDir, { recursive: true, force: true });
+  });
+
+  it("reports inSync=true when the file matches the live schema (tables-only scope)", async () => {
+    // The container's seed schema has users + orders, but earlier
+    // suites in this file may have added their own (stream_fixture,
+    // etc.) — narrow the comparison to the two we actually declared
+    // in the file so the assertion isn't tangled in test-isolation.
+    const file = path.join(outDir, "matching.sql");
+    await fsWriteFile(
+      file,
+      `CREATE TABLE users (id INT PRIMARY KEY);
+       CREATE TABLE orders (id INT PRIMARY KEY, user_id INT);`,
+    );
+
+    const r = await handleCompareSchemaFile({
+      live_connection: LIVE,
+      scratch_connection: SCRATCH,
+      schema_path: file,
+      scope: ["tables"],
+      tables: ["users", "orders"],
+    });
+    expect("isError" in r && r.isError).toBeFalsy();
+    const sc = (r as { structuredContent: Record<string, unknown> })
+      .structuredContent;
+    expect((sc.summary as { inSync: boolean }).inSync).toBe(true);
+    expect((sc.tables as { onlyInSource: string[] }).onlyInSource).toEqual([]);
+    expect((sc.tables as { onlyInTarget: string[] }).onlyInTarget).toEqual([]);
+  });
+
+  it("detects a table present in the file but missing from live", async () => {
+    const file = path.join(outDir, "extra-table.sql");
+    await fsWriteFile(
+      file,
+      `CREATE TABLE users (id INT PRIMARY KEY);
+       CREATE TABLE orders (id INT PRIMARY KEY, user_id INT);
+       CREATE TABLE feature_flags (id INT PRIMARY KEY, flag VARCHAR(64));`,
+    );
+
+    const r = await handleCompareSchemaFile({
+      live_connection: LIVE,
+      scratch_connection: SCRATCH,
+      schema_path: file,
+      scope: ["tables"],
+    });
+    expect("isError" in r && r.isError).toBeFalsy();
+    const sc = (r as { structuredContent: Record<string, unknown> })
+      .structuredContent;
+    expect((sc.summary as { inSync: boolean }).inSync).toBe(false);
+    // The file is the "source" side; live is "target". A table in the
+    // file but not in live appears in onlyInSource.
+    expect((sc.tables as { onlyInSource: string[] }).onlyInSource).toContain(
+      "feature_flags",
+    );
+  });
+
+  it("labels the source side with the file path, not the scratch connection", async () => {
+    const file = path.join(outDir, "labelled.sql");
+    await fsWriteFile(file, `CREATE TABLE users (id INT PRIMARY KEY);`);
+
+    const r = await handleCompareSchemaFile({
+      live_connection: LIVE,
+      scratch_connection: SCRATCH,
+      schema_path: file,
+      scope: ["tables"],
+    });
+    const sc = (r as { structuredContent: Record<string, unknown> })
+      .structuredContent;
+    expect((sc.source as { connection: string }).connection).toBe(
+      "file:" + file,
+    );
+  });
+
+  it("surfaces a precise per-statement error when the file has bad DDL", async () => {
+    const file = path.join(outDir, "broken.sql");
+    await fsWriteFile(
+      file,
+      `CREATE TABLE good (id INT PRIMARY KEY);
+       CREATE TABLE bad (id INT PRIMARY KEY, NOT_A_VALID_TYPE varchar);`,
+    );
+
+    const r = await handleCompareSchemaFile({
+      live_connection: LIVE,
+      scratch_connection: SCRATCH,
+      schema_path: file,
+      scope: ["tables"],
+    });
+    expect("isError" in r && r.isError).toBe(true);
+    expect((r.structuredContent as { code: string }).code).toBe(
+      "SCHEMA_LOAD_FAILED",
+    );
+    expect(r.content[0]?.text).toContain("statement 2 of 2");
+  });
+
+  it("drops the temp database even when the comparison succeeds", async () => {
+    const file = path.join(outDir, "cleanup.sql");
+    await fsWriteFile(file, `CREATE TABLE users (id INT PRIMARY KEY);`);
+
+    const dbsBefore = await queryWithTimeout<Array<{ Database: string }>>(
+      SCRATCH,
+      "SHOW DATABASES",
+    );
+
+    await handleCompareSchemaFile({
+      live_connection: LIVE,
+      scratch_connection: SCRATCH,
+      schema_path: file,
+      scope: ["tables"],
+    });
+
+    const dbsAfter = await queryWithTimeout<Array<{ Database: string }>>(
+      SCRATCH,
+      "SHOW DATABASES",
+    );
+    const beforeNames = new Set(dbsBefore.map((r) => r.Database));
+    const newDbs = dbsAfter
+      .map((r) => r.Database)
+      .filter((n) => !beforeNames.has(n));
+    expect(newDbs).toEqual([]);
   });
 });

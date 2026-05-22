@@ -514,6 +514,7 @@ Or with custom certificates:
 
 | Tool | Description |
 |------|-------------|
+| `compare_schema_file` | Diff a checked-in `.sql` schema file against a live database. Loads the file into a temp DB on a writable scratch connection, delegates to the same engine `compare_schemas` uses, and drops the temp DB. Designed for CI drift detection against a source-of-truth schema. V1 doesn't support `DELIMITER` blocks — stored routines / triggers in the file won't parse cleanly. |
 | `compare_schemas` | Diff two databases (potentially across connections). Reports drift across **9 aspects**: tables, table attributes (engine/charset/**partitioning**), columns (incl. comments, generated cols), indexes (incl. MySQL 8 invisible indexes, functional indexes, prefix lengths), foreign keys, views, routines, triggers, events. SQL bodies are whitespace-normalized; int display widths are normalized for cross-version (5.7 ↔ 8.0+) sanity. Restrict with `tables` filter or `scope` for cheaper runs. `summaryOnly: true` keeps huge diffs in context budget. Emits MCP progress notifications per scope. Honors client-side cancellation. |
 
 ## Resources
