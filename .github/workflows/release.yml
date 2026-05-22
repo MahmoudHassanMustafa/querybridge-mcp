@@ -132,8 +132,13 @@ jobs:
           push: true
           provenance: true
           sbom: true
+          # Three tags: bare semver (0.5.0), git-tag form (v0.5.0), and
+          # `latest`. Both `:0.5.0` and `:v0.5.0` are common conventions
+          # in the ecosystem; shipping both means users picking either
+          # naming pattern get a working pull.
           tags: |
             ${{ steps.imgtag.outputs.image }}:${{ steps.imgtag.outputs.version }}
+            ${{ steps.imgtag.outputs.image }}:v${{ steps.imgtag.outputs.version }}
             ${{ steps.imgtag.outputs.image }}:latest
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
