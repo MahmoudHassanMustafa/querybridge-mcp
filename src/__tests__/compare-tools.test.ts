@@ -17,7 +17,7 @@ import {
   type Routine,
   type Trigger,
   type Event,
-} from "../tools/compare-tools.js";
+} from "../tools/compare/index.js";
 
 const { normalizeType, normalizeSQL, chunkArray } = __test;
 

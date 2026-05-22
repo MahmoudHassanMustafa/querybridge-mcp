@@ -1,9 +1,43 @@
 import { readFileSync } from "node:fs";
 import net from "node:net";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { Client as SSHClient } from "ssh2";
 import type { ConnectConfig } from "ssh2";
 import type { DatabaseConfig } from "./schema.js";
-import { buildHostVerifier, log } from "./helpers.js";
+import { log } from "./log.js";
+
+/**
+ * Build an ssh2 hostVerifier callback that enforces the given SHA256
+ * fingerprint. Returns undefined when no fingerprint is configured —
+ * callers treat undefined as "no verification, warn the operator".
+ *
+ * Expected input format is what `ssh-keygen -lf <pubkey>` produces:
+ *   "SHA256:abc123...base64..."
+ * The "SHA256:" prefix is optional; trailing "=" padding is tolerated
+ * on either side.
+ *
+ * Comparison uses `timingSafeEqual` so a network-observable timing
+ * channel can't be used to recover the fingerprint byte-by-byte.
+ */
+export function buildHostVerifier(
+  expected: string | undefined,
+): ((key: Buffer) => boolean) | undefined {
+  if (!expected) return undefined;
+  const normalized = expected
+    .replace(/^SHA256:/i, "")
+    .replace(/=+$/, "")
+    .trim();
+  return (key: Buffer) => {
+    const actual = createHash("sha256")
+      .update(key)
+      .digest("base64")
+      .replace(/=+$/, "");
+    const a = Buffer.from(actual);
+    const b = Buffer.from(normalized);
+    if (a.length !== b.length) return false;
+    return timingSafeEqual(a, b);
+  };
+}
 
 export interface SSHTunnel {
   host: string;

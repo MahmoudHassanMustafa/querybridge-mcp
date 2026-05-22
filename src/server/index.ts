@@ -3,16 +3,16 @@
 import { createRequire } from "node:module";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { loadConfig } from "./config.js";
-import { initConnection, closeAll } from "./connection.js";
-import { registerTools } from "./tools/index.js";
-import { registerResources } from "./resources.js";
-import { registerPrompts } from "./prompts.js";
-import { log, setLogSink, markLogSinkConnected } from "./helpers.js";
+import { loadConfig } from "../config.js";
+import { initConnection, closeAll } from "../connection.js";
+import { registerTools } from "../tools/index.js";
+import { registerResources } from "../resources.js";
+import { registerPrompts } from "../prompts.js";
+import { log, setLogSink, markLogSinkConnected } from "../log.js";
 
 // Read version at runtime so it stays in sync with package.json (Changesets
 // only bumps package.json, not arbitrary string literals in source).
-const pkg = createRequire(import.meta.url)("../package.json") as {
+const pkg = createRequire(import.meta.url)("../../package.json") as {
   version: string;
 };
 const VERSION = pkg.version;

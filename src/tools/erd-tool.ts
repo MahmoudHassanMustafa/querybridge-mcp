@@ -1,7 +1,8 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { queryWithTimeout } from "../connection.js";
-import { resolveDb, toolOk, toolHandler } from "../helpers.js";
+import { resolveDb } from "../db/resolve.js";
+import { toolOk, toolHandler } from "../tool-runtime.js";
 
 export function registerErdTool(server: McpServer) {
   server.registerTool(
@@ -86,10 +87,12 @@ export function registerErdTool(server: McpServer) {
         Array<{ name: string; type: string; key: string }>
       >();
       for (const col of columns) {
-        if (!tableMap.has(col.TABLE_NAME)) {
-          tableMap.set(col.TABLE_NAME, []);
+        let bucket = tableMap.get(col.TABLE_NAME);
+        if (!bucket) {
+          bucket = [];
+          tableMap.set(col.TABLE_NAME, bucket);
         }
-        tableMap.get(col.TABLE_NAME)!.push({
+        bucket.push({
           name: col.COLUMN_NAME,
           type: simplifyType(col.COLUMN_TYPE),
           key: col.COLUMN_KEY,

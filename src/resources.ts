@@ -5,7 +5,13 @@ import {
   getConnectionConfig,
   queryWithTimeout,
 } from "./connection.js";
-import { qualifiedTable, formatAsTable } from "./helpers.js";
+import { qualifiedTable } from "./sql/identifiers.js";
+import { formatAsTable } from "./format.js";
+import {
+  getCreateTable,
+  listDatabaseNames,
+  listTableNames,
+} from "./db/introspection.js";
 
 export function registerResources(server: McpServer) {
   // ── Table schema resource ─────────────────────────────────────────
@@ -28,14 +34,8 @@ export function registerResources(server: McpServer) {
             if (!db) continue;
 
             try {
-              const rows = await queryWithTimeout<Array<Record<string, string>>>(
-                connName,
-                `SELECT TABLE_NAME FROM information_schema.TABLES
-                 WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE'`,
-                [db]
-              );
-              for (const row of rows) {
-                const table = row.TABLE_NAME;
+              const tables = await listTableNames(connName, db);
+              for (const table of tables) {
                 resources.push({
                   uri: `mysql://${connName}/${db}/${table}/schema`,
                   name: `${connName}/${db}/${table}`,
@@ -54,13 +54,7 @@ export function registerResources(server: McpServer) {
           database: async (value, ctx) => {
             try {
               const args = ctx?.arguments ?? {};
-              const rows = await queryWithTimeout<Array<Record<string, string>>>(
-                args.connection as string,
-                "SHOW DATABASES"
-              );
-              return rows
-                .map((r) => Object.values(r)[0])
-                .filter((v): v is string => typeof v === "string");
+              return await listDatabaseNames(args.connection as string);
             } catch {
               return [];
             }
@@ -68,16 +62,10 @@ export function registerResources(server: McpServer) {
           table: async (value, ctx) => {
             try {
               const args = ctx?.arguments ?? {};
-              const db = args.database as string;
-              const rows = await queryWithTimeout<Array<Record<string, string>>>(
+              return await listTableNames(
                 args.connection as string,
-                `SELECT TABLE_NAME FROM information_schema.TABLES
-                 WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE'`,
-                [db]
+                args.database as string,
               );
-              return rows
-                .map((r) => r.TABLE_NAME)
-                .filter((v): v is string => typeof v === "string");
             } catch {
               return [];
             }
@@ -97,11 +85,7 @@ export function registerResources(server: McpServer) {
       const qt = qualifiedTable(db, table);
 
       const columns = await queryWithTimeout(connName, `DESCRIBE ${qt}`);
-      const createResult = await queryWithTimeout<Array<Record<string, string>>>(
-        connName,
-        `SHOW CREATE TABLE ${qt}`
-      );
-      const createStatement = createResult[0]?.["Create Table"] ?? "";
+      const createStatement = await getCreateTable(connName, db, table);
 
       const text = [
         `# ${db}.${table}`,
@@ -153,13 +137,7 @@ export function registerResources(server: McpServer) {
           database: async (value, ctx) => {
             try {
               const args = ctx?.arguments ?? {};
-              const rows = await queryWithTimeout<Array<Record<string, string>>>(
-                args.connection as string,
-                "SHOW DATABASES"
-              );
-              return rows
-                .map((r) => Object.values(r)[0])
-                .filter((v): v is string => typeof v === "string");
+              return await listDatabaseNames(args.connection as string);
             } catch {
               return [];
             }
@@ -176,7 +154,14 @@ export function registerResources(server: McpServer) {
       const connName = variables.connection as string;
       const db = variables.database as string;
 
-      const rows = await queryWithTimeout<Array<Record<string, unknown>>>(
+      interface DatabaseOverviewRow {
+        TABLE_NAME: string;
+        TABLE_ROWS: number | null;
+        ENGINE: string | null;
+        DATA_LENGTH: number | null;
+        INDEX_LENGTH: number | null;
+      }
+      const rows = await queryWithTimeout<DatabaseOverviewRow[]>(
         connName,
         `SELECT TABLE_NAME, TABLE_ROWS, ENGINE, DATA_LENGTH, INDEX_LENGTH
          FROM information_schema.TABLES

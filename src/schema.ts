@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { z } from "zod";
-import { expandTilde } from "./helpers.js";
+import { expandTilde } from "./paths.js";
 
 const tildePath = z.string().min(1).transform((p) => expandTilde(p));
 

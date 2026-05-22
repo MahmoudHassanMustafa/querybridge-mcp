@@ -1,23 +1,51 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { queryWithTimeout } from "../connection.js";
-import {
-  qualifiedTable,
-  resolveDb,
-  formatAsTable,
-  humanSize,
-  toolOk,
-  toolHandler,
-} from "../helpers.js";
+import { qualifiedTable } from "../sql/identifiers.js";
+import { resolveDb } from "../db/resolve.js";
+import { getTableStats } from "../db/introspection.js";
+import { formatAsTable, humanSize } from "../format.js";
+import { toolOk, toolHandler, READ_ONLY_TOOL_ANNOTATIONS } from "../tool-runtime.js";
 
-const READ_ONLY = {
-  readOnlyHint: true,
-  idempotentHint: true,
-  openWorldHint: true,
-} as const;
+export const handleGetTableStats = toolHandler(
+  "get_table_stats",
+  async ({
+    connection,
+    database,
+    table,
+  }: {
+    connection: string;
+    database?: string | undefined;
+    table?: string | undefined;
+  }) => {
+    const r = resolveDb(connection, database);
+    if ("error" in r) return r.error;
+
+    const tables = await getTableStats(connection, r.db, table);
+    if (tables.length === 0) {
+      return toolOk("No tables found", { database: r.db, tables: [] });
+    }
+
+    const formatted = tables.map((t) => ({
+      TABLE_NAME: t.TABLE_NAME,
+      ROWS: t.TABLE_ROWS,
+      DATA_SIZE: humanSize(t.DATA_LENGTH),
+      INDEX_SIZE: humanSize(t.INDEX_LENGTH),
+      TOTAL_SIZE: humanSize((t.DATA_LENGTH ?? 0) + (t.INDEX_LENGTH ?? 0)),
+      AUTO_INC: t.AUTO_INCREMENT ?? "N/A",
+      ENGINE: t.ENGINE,
+      CREATED: t.CREATE_TIME ?? "N/A",
+      UPDATED: t.UPDATE_TIME ?? "N/A",
+    }));
+
+    return toolOk(
+      formatAsTable(formatted) + `\n\n${tables.length} table(s) in ${r.db}`,
+      { database: r.db, tables },
+    );
+  },
+);
 
 export function registerDataTools(server: McpServer) {
-  // ── get_table_stats ───────────────────────────────────────────────
   server.registerTool(
     "get_table_stats",
     {
@@ -29,60 +57,9 @@ export function registerDataTools(server: McpServer) {
         database: z.string().optional().describe("Database name"),
         table: z.string().optional().describe("Table name (omit for all tables)"),
       },
-      annotations: READ_ONLY,
+      annotations: READ_ONLY_TOOL_ANNOTATIONS,
     },
-    toolHandler("get_table_stats", async ({ connection, database, table }) => {
-      const r = resolveDb(connection, database);
-      if ("error" in r) return r.error;
-
-      let sql = `
-        SELECT
-          TABLE_NAME,
-          TABLE_ROWS,
-          DATA_LENGTH,
-          INDEX_LENGTH,
-          AUTO_INCREMENT,
-          CREATE_TIME,
-          UPDATE_TIME,
-          ENGINE
-        FROM information_schema.TABLES
-        WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE'`;
-
-      const params: string[] = [r.db];
-      if (table) {
-        sql += ` AND TABLE_NAME = ?`;
-        params.push(table);
-      }
-      sql += ` ORDER BY DATA_LENGTH DESC`;
-
-      const tables = await queryWithTimeout<Array<Record<string, unknown>>>(
-        connection,
-        sql,
-        params,
-      );
-      if (tables.length === 0) {
-        return toolOk("No tables found", { database: r.db, tables: [] });
-      }
-
-      const formatted = tables.map((t) => ({
-        TABLE_NAME: t.TABLE_NAME,
-        ROWS: t.TABLE_ROWS,
-        DATA_SIZE: humanSize(t.DATA_LENGTH as number),
-        INDEX_SIZE: humanSize(t.INDEX_LENGTH as number),
-        TOTAL_SIZE: humanSize(
-          ((t.DATA_LENGTH as number) ?? 0) + ((t.INDEX_LENGTH as number) ?? 0),
-        ),
-        AUTO_INC: t.AUTO_INCREMENT ?? "N/A",
-        ENGINE: t.ENGINE,
-        CREATED: t.CREATE_TIME ?? "N/A",
-        UPDATED: t.UPDATE_TIME ?? "N/A",
-      }));
-
-      return toolOk(
-        formatAsTable(formatted) + `\n\n${tables.length} table(s) in ${r.db}`,
-        { database: r.db, tables },
-      );
-    }),
+    handleGetTableStats,
   );
 
   // ── sample_data ───────────────────────────────────────────────────
@@ -102,7 +79,7 @@ export function registerDataTools(server: McpServer) {
           .optional()
           .describe("Number of rows to return (default: 5, max: 100)"),
       },
-      annotations: READ_ONLY,
+      annotations: READ_ONLY_TOOL_ANNOTATIONS,
     },
     toolHandler("sample_data", async ({ connection, table, database, limit }) => {
       const r = resolveDb(connection, database);

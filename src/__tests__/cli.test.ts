@@ -1,5 +1,5 @@
 /**
- * Subprocess tests for the CLI. We spawn `node dist/cli.js <args>` with a
+ * Subprocess tests for the CLI. We spawn `node dist/server/cli.js <args>` with a
  * scratch config in a temp dir and assert stdout/stderr/exit-code.
  *
  * Why subprocess instead of unit tests?
@@ -24,7 +24,7 @@ import { dirname, resolve } from "node:path";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const CLI_PATH = resolve(__dirname, "..", "..", "dist", "cli.js");
+const CLI_PATH = resolve(__dirname, "..", "..", "dist", "server", "cli.js");
 
 interface CliResult {
   stdout: string;

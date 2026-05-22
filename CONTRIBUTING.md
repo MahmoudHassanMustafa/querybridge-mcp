@@ -3,6 +3,26 @@
 Thanks for your interest. This is a small focused project — a single MCP
 server bridging Claude (and other MCP clients) to MySQL.
 
+## Read this first: CONVENTIONS.md
+
+[`CONVENTIONS.md`](CONVENTIONS.md) is the bar new code must clear. It
+describes the layering, tool contract, type policy, error model, and
+security invariants the codebase already follows. If your PR disagrees
+with it, expect a review comment pointing back.
+
+Three of the rules are enforced mechanically so you can't accidentally
+drift:
+
+- **Layering** — `pnpm lint:arch` (dependency-cruiser) blocks imports
+  that cross layer boundaries the wrong way. See
+  [`.dependency-cruiser.cjs`](.dependency-cruiser.cjs).
+- **Type strictness** — `tsc --strict` with
+  `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes`. No
+  `any` without a justified `eslint-disable`.
+- **Tool contract** — `toolHandler`/`toolOk`/`toolError` for every
+  tool. ESLint rules in `eslint.config.js` flag `console.*` outside
+  the logger and dynamic-SQL templates without an escape helper.
+
 ## Setup
 
 ```bash
@@ -21,7 +41,7 @@ it up automatically). See SECURITY.md for the security model.
 3. Run the local pipeline:
 
    ```bash
-   pnpm lint        # ESLint
+   pnpm lint        # ESLint + dependency-cruiser (lint:arch)
    pnpm build       # tsc strict
    pnpm test        # vitest unit suite
    pnpm format      # optional — Prettier reformats

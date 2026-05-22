@@ -67,4 +67,4 @@ ENV NODE_ENV=production
 
 # MCP uses stdio — clients connect by piping into the container's
 # stdin/stdout. Run with `docker run -i --rm` so the TTY is wired up.
-ENTRYPOINT ["node", "dist/index.js"]
+ENTRYPOINT ["node", "dist/server/index.js"]

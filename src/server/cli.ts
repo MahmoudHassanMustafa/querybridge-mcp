@@ -4,17 +4,15 @@ import { readFileSync, writeFileSync, existsSync, chmodSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { createInterface } from "node:readline";
 import { createRequire } from "node:module";
-import mysql from "mysql2/promise";
 import { ZodError } from "zod";
-import { expandTilde } from "./helpers.js";
-import { createSSHTunnel, closeSSHTunnel } from "./ssh-tunnel.js";
-import type { SSHTunnel } from "./ssh-tunnel.js";
-import { AppConfigSchema, DatabaseConfigSchema, formatZodError } from "./schema.js";
-import type { AppConfig, DatabaseConfig } from "./types.js";
+import { expandTilde } from "../paths.js";
+import { pingConnection } from "../connection.js";
+import { AppConfigSchema, DatabaseConfigSchema, formatZodError } from "../schema.js";
+import type { AppConfig, DatabaseConfig } from "../types.js";
 
 // Read version at runtime so it stays in sync with package.json.
 const VERSION = (
-  createRequire(import.meta.url)("../package.json") as { version: string }
+  createRequire(import.meta.url)("../../package.json") as { version: string }
 ).version;
 
 // ── Config file resolution ──────────────────────────────────────────
@@ -312,58 +310,9 @@ async function testConnection(
   conn: DatabaseConfig,
   inline = false,
 ): Promise<boolean> {
-  let mysqlHost = conn.host;
-  let mysqlPort = conn.port;
-  let tunnel: SSHTunnel | undefined;
-
   try {
-    if (conn.ssh) {
-      tunnel = await createSSHTunnel(conn);
-      mysqlHost = tunnel.host;
-      mysqlPort = tunnel.port;
-      if (!inline) process.stdout.write("  SSH tunnel established... ");
-    }
-
-    const poolOpts: mysql.PoolOptions = {
-      host: mysqlHost,
-      port: mysqlPort,
-      user: conn.user,
-      connectTimeout: 10000,
-      connectionLimit: 1,
-    };
-    if (conn.password !== undefined) poolOpts.password = conn.password;
-    if (conn.database) poolOpts.database = conn.database;
-
-    if (conn.ssl) {
-      if (conn.ssl === true) {
-        poolOpts.ssl = {};
-      } else {
-        const ssl: Record<string, unknown> = {
-          rejectUnauthorized: conn.ssl.rejectUnauthorized ?? true,
-        };
-        if (conn.ssl.ca) ssl.ca = readFileSync(conn.ssl.ca);
-        if (conn.ssl.cert) ssl.cert = readFileSync(conn.ssl.cert);
-        if (conn.ssl.key) ssl.key = readFileSync(conn.ssl.key);
-        poolOpts.ssl = ssl as NonNullable<mysql.PoolOptions["ssl"]>;
-      }
-    }
-
-    const pool = mysql.createPool(poolOpts);
-    const connection = await pool.getConnection();
-
-    // Get version info
-    const [rows] = await connection.query("SELECT VERSION() AS version");
-    const version =
-      (rows as Array<Record<string, string>>)[0]?.version ?? "unknown";
-
-    // Count databases accessible
-    const [dbs] = await connection.query("SHOW DATABASES");
-    const dbCount = (dbs as unknown[]).length;
-
-    connection.release();
-    await pool.end();
-
-    const msg = `${green("OK")} MySQL ${version}, ${dbCount} database(s) accessible`;
+    const { version, databaseCount } = await pingConnection(conn);
+    const msg = `${green("OK")} MySQL ${version}, ${databaseCount} database(s) accessible`;
     if (inline) {
       console.log(msg);
     } else {
@@ -378,8 +327,6 @@ async function testConnection(
       console.log(`\n  ${msg}`);
     }
     return false;
-  } finally {
-    if (tunnel) closeSSHTunnel(tunnel);
   }
 }
 

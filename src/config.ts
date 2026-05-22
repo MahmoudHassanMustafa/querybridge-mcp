@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { ZodError } from "zod";
-import { expandTilde, log } from "./helpers.js";
+import { expandTilde } from "./paths.js";
+import { log } from "./log.js";
 import { AppConfigSchema, formatZodError } from "./schema.js";
 import type { AppConfig } from "./schema.js";
 

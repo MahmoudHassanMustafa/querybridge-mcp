@@ -30,9 +30,36 @@ export default tseslint.config(
         { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
       ],
 
-      // `as` is fine for the mysql2 row → typed-record bridge, but we
-      // want it called out at review time
-      "@typescript-eslint/no-explicit-any": "warn",
+      // `as` is fine for the mysql2 row → typed-record bridge, but new
+      // `any` requires an explicit eslint-disable so the reviewer sees
+      // and approves it (e.g. ToolExtra.sendNotification).
+      "@typescript-eslint/no-explicit-any": "error",
+
+      // // @ts-ignore is a sledgehammer; require @ts-expect-error which
+      // turns into a lint error once the issue is fixed.
+      "@typescript-eslint/ban-ts-comment": [
+        "error",
+        {
+          "ts-ignore": true,
+          "ts-expect-error": "allow-with-description",
+          "ts-nocheck": true,
+          minimumDescriptionLength: 10,
+        },
+      ],
+
+      // Forbid string-interpolating user values into KILL/EXPLAIN/USE-style
+      // dynamic statements. The legitimate sites use Number.isInteger guards
+      // (kill_query) or escapeId (USE statements). Any new dynamic SQL needs
+      // a reviewer-justified eslint-disable.
+      "no-restricted-syntax": [
+        "warn",
+        {
+          selector:
+            "TemplateLiteral[quasis.0.value.cooked=/\\bKILL\\s+/i][expressions.length>0]",
+          message:
+            "Dynamic KILL: ensure the value is a verified positive integer (Number.isInteger), then justify with eslint-disable.",
+        },
+      ],
 
       // Async hygiene: missing await is almost always a bug
       "require-await": "off", // disabled in favor of the TS-aware version
@@ -42,19 +69,21 @@ export default tseslint.config(
   },
   // CLI exits via console.log; allow it there.
   {
-    files: ["src/cli.ts"],
+    files: ["src/server/cli.ts"],
     rules: {
       "no-console": "off",
     },
   },
   // Tests use vitest + may legitimately use `any`/non-null assertions
-  // for fixture construction.
+  // for fixture construction, and exercise dynamic KILL via direct
+  // queries against the testcontainer.
   {
     files: ["src/__tests__/**/*.ts"],
     rules: {
       "@typescript-eslint/no-non-null-assertion": "off",
       "@typescript-eslint/no-explicit-any": "off",
       "no-console": "off",
+      "no-restricted-syntax": "off",
     },
   },
 );

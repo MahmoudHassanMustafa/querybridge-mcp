@@ -1,20 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { expandTilde } from "../paths.js";
+import { escapeId, qualifiedTable } from "../sql/identifiers.js";
+import { stripSQLComments } from "../sql/readonly.js";
 import {
-  expandTilde,
-  escapeId,
-  qualifiedTable,
   toolOk,
   toolError,
   toolHandler,
-  formatAsTable,
-  humanSize,
-  stripSQLComments,
   sanitizeErrorMessage,
-  log,
-  setLogSink,
-  markLogSinkConnected,
-  buildHostVerifier,
-} from "../helpers.js";
+} from "../tool-runtime.js";
+import { formatAsTable, humanSize } from "../format.js";
+import { log, setLogSink, markLogSinkConnected } from "../log.js";
+import { buildHostVerifier } from "../ssh-tunnel.js";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 
