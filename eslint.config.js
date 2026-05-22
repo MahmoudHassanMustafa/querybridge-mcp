@@ -2,6 +2,7 @@
 import eslint from "@eslint/js";
 import tseslint from "typescript-eslint";
 import globals from "globals";
+import prettierConfig from "eslint-config-prettier/flat";
 import localPlugin from "./eslint-plugins/local.js";
 
 export default tseslint.config(
@@ -148,4 +149,9 @@ export default tseslint.config(
       "no-restricted-syntax": "off",
     },
   },
+  // Disables any ESLint rules that conflict with Prettier's output.
+  // Must come LAST so it overrides the rules above. Avoids the
+  // "ESLint says one thing, Prettier says another" infinite-fix loop
+  // when the editor runs both on save.
+  prettierConfig,
 );

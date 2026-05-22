@@ -1,0 +1,18 @@
+# Cross-editor consistency for contributors who don't run Prettier
+# on save. Settings here mirror .prettierrc.json so editors that
+# respect EditorConfig produce files Prettier won't reformat.
+
+root = true
+
+[*]
+indent_style = space
+indent_size = 2
+end_of_line = lf
+charset = utf-8
+trim_trailing_whitespace = true
+insert_final_newline = true
+
+# Markdown uses trailing whitespace for explicit line breaks ("  \n").
+# Stripping them silently mangles author intent.
+[*.md]
+trim_trailing_whitespace = false

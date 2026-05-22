@@ -12,14 +12,16 @@ Operational notes for agents working in this repo. **Read `CONVENTIONS.md` for t
 ## Commands
 
 ```bash
-pnpm install
+pnpm install            # also installs the husky pre-commit hook via `prepare`
 pnpm build              # tsc
 pnpm lint               # eslint + dep-cruiser (architecture enforcement)
 pnpm test               # unit tests (Vitest)
 pnpm test:integration   # MySQL Testcontainers — needs Docker running
+pnpm format             # prettier --write across the repo
+pnpm format:check       # prettier --check (no writes) — what CI would run
 ```
 
-Run `pnpm lint && pnpm test` before any commit. CI runs the same on Node 20/22/24 + integration + a Docker build.
+`pnpm lint && pnpm test` covers everything CI does. The pre-commit hook handles the formatting + ESLint pass on staged files automatically — no need to remember `pnpm format` before each commit.
 
 ## Release flow
 
@@ -32,7 +34,7 @@ Changesets-driven. **Never bump versions manually.**
 ## Hard rules
 
 - **Never commit `config.json`.** It contains DB credentials. `config.example.json` is the sanitized template.
-- **Never skip pre-commit hooks** (`--no-verify`). They run lint. If a hook fails, fix the root cause.
+- **Never skip pre-commit hooks** (`--no-verify`). The hook (`.husky/pre-commit`) runs `lint-staged`, which calls `eslint --fix --max-warnings=0` and `prettier --write` on staged files only. Fast (~1s typical) and fixable — if it fails, fix the root cause instead of bypassing.
 - **Never reach for `mysql2` outside `src/connection.ts`, `src/db/cancel.ts`, or `src/tools/query-tools.ts`.** Pool hardening (`LOCAL_FILES` block, SSL setup, `SET SESSION transaction_read_only`) only happens in `buildPoolOptions`. Bypassing it loses defenses. `dep-cruiser` enforces.
 - **Every new tool ships with an integration test.** `MockRunner` unit tests are not enough — real MySQL catches behavior the mock doesn't (CONVENTIONS.md §8).
 - **Read-only by default.** Two layers, both required: `getConnectionConfig().readonly` flag check AND `isReadOnlyQuery()` SQL whitelist. Don't skip either.
@@ -58,5 +60,7 @@ Changesets-driven. **Never bump versions manually.**
 - `src/limits.ts` — every centralized constant (timeouts, budgets, chunk sizes) with its rationale inline
 - `src/__tests__/` — unit (`*.test.ts`) and integration (`integration/*.integration.test.ts`)
 - `eslint-plugins/local.js` — in-repo ESLint rules codifying CONVENTIONS.md §9
+- `.husky/pre-commit` + `lint-staged` config in `package.json` — runs ESLint + Prettier on staged files only on every commit
+- `.editorconfig` — cross-editor indent/EOL/charset defaults (mirrors `.prettierrc.json` for contributors who don't have Prettier on save)
 - `CONVENTIONS.md` — the §1-§9 rules. Read this before any non-trivial change.
 - `CONTRIBUTING.md` — the dev loop end-to-end.
