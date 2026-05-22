@@ -18,3 +18,8 @@
 - `fast-uri` is used by `ajv` for `$ref` URI parsing in Zod-schema validation at the tool boundary — narrow exposure but technically reachable on malformed input.
 
 Hygiene update; existing tests + lint + dep-cruiser all pass unchanged.
+
+**Also in this release: security docs maintenance.**
+
+- **`SECURITY.md` refreshed** — added a versioned "Supported Versions" table; expanded the Network Surface section to cover the HTTP transport's listening behavior and reverse-proxy / OAuth pattern (the pre-HTTP-transport text said the server "does not open network ports", which stopped being true at 0.7.0); added a Dependency Hygiene section documenting how `pnpm audit` fixes ship as patch releases.
+- **`compare_schema_file` scratch-user privilege guidance** — explicit recommendation to grant `CREATE, DROP, ALL PRIVILEGES ON \`_qbmcp_check_%\`._`to the scratch user, never`_._`. The temp DBs always live under the `*qbmcp_check*_`prefix, so the narrower grant is sufficient and bounds the blast radius if the scratch credentials ever leak. Added to`SECURITY.md`, the tool's source comment, and the README Safety section.
