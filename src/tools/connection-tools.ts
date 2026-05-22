@@ -3,10 +3,34 @@ import { z } from "zod";
 import {
   getConnectionConfig,
   listConnectionNames,
-  queryWithTimeout,
   setActiveDatabase,
 } from "../connection.js";
-import { toolOk, toolError, toolHandler } from "../helpers.js";
+import { databaseExists, listDatabaseNames } from "../db/introspection.js";
+import { toolOk, toolError, toolHandler } from "../tool-runtime.js";
+
+// ── Handlers (exported for unit tests) ───────────────────────────
+
+export const handleUseDatabase = toolHandler(
+  "use_database",
+  async ({
+    connection,
+    database,
+  }: {
+    connection: string;
+    database: string;
+  }) => {
+    if (!(await databaseExists(connection, database))) {
+      return toolError(`Database "${database}" not found`);
+    }
+    setActiveDatabase(connection, database);
+    return toolOk(`Switched to database "${database}" on ${connection}`, {
+      connection,
+      database,
+    });
+  },
+);
+
+// ── Tool registration ────────────────────────────────────────────
 
 export function registerConnectionTools(server: McpServer) {
   server.registerTool(
@@ -61,11 +85,7 @@ export function registerConnectionTools(server: McpServer) {
       },
     },
     toolHandler("list_databases", async ({ connection }) => {
-      const rows = await queryWithTimeout<Array<Record<string, string>>>(
-        connection,
-        "SHOW DATABASES",
-      );
-      const databases = rows.map((r) => Object.values(r)[0]);
+      const databases = await listDatabaseNames(connection);
       return toolOk(
         `${databases.join("\n")}\n\n${databases.length} database(s)`,
         { databases },
@@ -90,20 +110,6 @@ export function registerConnectionTools(server: McpServer) {
         openWorldHint: true,
       },
     },
-    toolHandler("use_database", async ({ connection, database }) => {
-      const rows = await queryWithTimeout<unknown[]>(
-        connection,
-        "SHOW DATABASES LIKE ?",
-        [database],
-      );
-      if (rows.length === 0) {
-        return toolError(`Database "${database}" not found`);
-      }
-      setActiveDatabase(connection, database);
-      return toolOk(`Switched to database "${database}" on ${connection}`, {
-        connection,
-        database,
-      });
-    }),
+    handleUseDatabase,
   );
 }

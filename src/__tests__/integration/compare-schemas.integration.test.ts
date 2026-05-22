@@ -137,7 +137,7 @@ import {
   diffRoutines,
   diffTriggers,
   diffTableAttributes,
-} from "../../tools/compare-tools.js";
+} from "../../tools/compare/index.js";
 
 describe("compare_schemas end-to-end against two MySQL containers", () => {
   it("detects table existence deltas (orders only in src, feature_flags only in tgt)", async () => {

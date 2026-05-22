@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isReadOnlyQuery, isExplainSafe } from "../helpers.js";
+import { isReadOnlyQuery, isExplainSafe } from "../sql/readonly.js";
 
 // ── isReadOnlyQuery: allowed queries ────────────────────────────────
 

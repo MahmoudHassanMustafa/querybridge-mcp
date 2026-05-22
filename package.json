@@ -22,11 +22,11 @@
     "database"
   ],
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "dist/server/index.js",
+  "types": "dist/server/index.d.ts",
   "bin": {
-    "querybridge-mcp": "dist/cli.js",
-    "querybridge-mcp-server": "dist/index.js"
+    "querybridge-mcp": "dist/server/cli.js",
+    "querybridge-mcp-server": "dist/server/index.js"
   },
   "files": [
     "dist",
@@ -34,7 +34,7 @@
     "LICENSE"
   ],
   "exports": {
-    ".": "./dist/index.js"
+    ".": "./dist/server/index.js"
   },
   "engines": {
     "node": ">=20"
@@ -42,14 +42,15 @@
   "packageManager": "pnpm@10.24.0",
   "scripts": {
     "build": "tsc",
-    "start": "node dist/index.js",
-    "cli": "node dist/cli.js",
+    "start": "node dist/server/index.js",
+    "cli": "node dist/server/cli.js",
     "dev": "tsc --watch",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:all": "pnpm test && pnpm test:integration",
-    "lint": "eslint .",
+    "lint": "eslint . && pnpm lint:arch",
+    "lint:arch": "depcruise --config .dependency-cruiser.cjs src",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "changeset": "changeset",
@@ -67,6 +68,7 @@
     "@testcontainers/mysql": "^12.0.0",
     "@types/node": "^25.9.1",
     "@types/ssh2": "^1.15.4",
+    "dependency-cruiser": "^17.4.0",
     "eslint": "^10.4.0",
     "globals": "^17.6.0",
     "prettier": "^3.8.3",

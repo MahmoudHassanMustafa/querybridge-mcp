@@ -443,23 +443,35 @@ Prompts appear in the MCP prompt list. Select one and provide the required argum
 ```
 querybridge-mcp/
   src/
-    index.ts              Server entry point (MCP stdio transport)
-    cli.ts                CLI entry point
-    types.ts              TypeScript interfaces
+    server/               Transport layer (MCP stdio + admin CLI)
+      index.ts            MCP server entry point
+      cli.ts              `querybridge-mcp` admin CLI
+    types.ts              Config type re-exports
+    types/db.ts           Shared domain types (Column, IndexDef, FK, etc.)
     config.ts             Config loading (file, inline JSON, env vars)
+    schema.ts             Zod config schemas
     connection.ts         MySQL pool management + SSH tunneling
-    helpers.ts            Shared utilities (formatting, escaping, errors)
+    ssh-tunnel.ts         SSH tunnel + host-key verification
+    tool-runtime.ts       toolHandler middleware + tool-response helpers
+    log.ts                Logger + AsyncLocalStorage trace context
+    paths.ts              expandTilde
+    format.ts             Table + size rendering
+    limits.ts             Centralized constants (timeouts, budgets, chunks)
+    errors.ts             Typed error taxonomy (QueryBridgeError + subclasses)
     resources.ts          MCP resource templates
     prompts.ts            MCP prompt templates
+    sql/                  SQL primitives (identifiers, readonly check)
+    db/                   Repository layer (introspection, runner, resolve, cancel, retry)
     tools/
       index.ts            Tool registration barrel
       connection-tools.ts list_connections, list_databases, use_database
-      schema-tools.ts     list_tables, describe_table, get_ddl, get_foreign_keys, get_indexes, search_columns, list_views, describe_view, get_view_ddl
+      schema/             list_tables, describe_table, get_ddl, get_foreign_keys, get_indexes, search_columns, list_views, describe_view, get_view_ddl
       query-tools.ts      execute_query, explain_query
       data-tools.ts       sample_data, get_table_stats
-      routines-tools.ts   list_routines, get_routine_ddl, list_triggers, get_trigger_ddl, list_events, get_event_ddl
+      routines/           list_routines, get_routine_ddl, list_triggers, get_trigger_ddl, list_events, get_event_ddl
       erd-tool.ts         generate_erd
       admin-tools.ts      list_processes, kill_query, get_unused_indexes, get_charset_collation
+      compare/            compare_schemas (fetchers/diff/render pipeline)
   dist/                   Compiled output
   config.json             Your connections (gitignored)
   config.example.json     Example configuration
