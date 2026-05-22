@@ -6,7 +6,7 @@ A Model Context Protocol (MCP) server that connects Claude Code to MySQL databas
 
 ## Features
 
-- **24 tools** for schema introspection, querying, ERD generation, programmability, and operator admin
+- **28 tools** for schema introspection, querying, ERD generation, programmability, operator admin, and cross-database diffing
 - **2 MCP resources** for browsable schema access
 - **4 MCP prompts** for guided database workflows
 - **SSH tunnel support** with password or private key authentication
@@ -349,6 +349,12 @@ Or with custom certificates:
 | `kill_query` | KILL QUERY (or KILL CONNECTION) by process ID. Gated: requires `readonly: false` |
 | `get_unused_indexes` | Detect secondary indexes with zero reads in `performance_schema` and produce DROP statements |
 | `get_charset_collation` | Show character set and collation at database, table, and column levels |
+
+### Cross-database diffing
+
+| Tool | Description |
+|------|-------------|
+| `compare_schemas` | Diff two databases (potentially across connections). Reports drift across **9 aspects**: tables, table attributes (engine/charset/**partitioning**), columns (incl. comments, generated cols), indexes (incl. MySQL 8 invisible indexes, functional indexes, prefix lengths), foreign keys, views, routines, triggers, events. SQL bodies are whitespace-normalized; int display widths are normalized for cross-version (5.7 ↔ 8.0+) sanity. Restrict with `tables` filter or `scope` for cheaper runs. `summaryOnly: true` keeps huge diffs in context budget. Emits MCP progress notifications per scope. Honors client-side cancellation. |
 
 ## Resources
 

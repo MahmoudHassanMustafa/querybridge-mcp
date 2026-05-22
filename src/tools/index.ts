@@ -6,6 +6,7 @@ import { registerDataTools } from "./data-tools.js";
 import { registerRoutinesTools } from "./routines-tools.js";
 import { registerErdTool } from "./erd-tool.js";
 import { registerAdminTools } from "./admin-tools.js";
+import { registerCompareTools } from "./compare-tools.js";
 
 export function registerTools(server: McpServer) {
   registerConnectionTools(server);
@@ -15,4 +16,5 @@ export function registerTools(server: McpServer) {
   registerRoutinesTools(server);
   registerErdTool(server);
   registerAdminTools(server);
+  registerCompareTools(server);
 }
