@@ -31,7 +31,14 @@ COPY src ./src
 RUN pnpm run build
 
 # Drop dev-only deps so the runtime stage's node_modules is minimal.
-RUN pnpm prune --prod
+#
+# `--ignore-scripts` is load-bearing: prune triggers the `prepare`
+# lifecycle script, which calls `husky` to install the git hook.
+# We've already removed husky as part of the prune itself, so without
+# --ignore-scripts the script runs and fails with "husky: not found".
+# No lifecycle scripts should run during a production prune anyway —
+# we already built; this step is purely about shrinking node_modules.
+RUN pnpm prune --prod --ignore-scripts
 
 # ── Stage 2: Runtime ────────────────────────────────────────────────
 #

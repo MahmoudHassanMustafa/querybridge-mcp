@@ -1,0 +1,18 @@
+#!/usr/bin/env sh
+# Pre-commit hook — runs ESLint + Prettier on staged files only.
+#
+# Why lint-staged and not `pnpm lint`:
+#   - Full `pnpm lint` runs ESLint over the entire repo (~1k LOC of TS)
+#     plus dep-cruiser. Around 4-5s every commit; people end up using
+#     `--no-verify` to avoid the wait. lint-staged hits only the files
+#     git is about to commit — typically under a second.
+#   - Architecture (dep-cruiser) and full type-check (`tsc`) run in CI;
+#     pre-commit shouldn't duplicate that work, only catch the easy
+#     stuff before it leaves the developer's machine.
+#
+# To bypass for a single commit (e.g. WIP on a branch), use:
+#   git commit --no-verify
+# Don't make a habit of it — CLAUDE.md and CONVENTIONS.md both list
+# this as a hard rule.
+
+pnpm exec lint-staged

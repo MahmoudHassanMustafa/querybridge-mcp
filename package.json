@@ -54,7 +54,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "changeset": "changeset",
-    "prepublishOnly": "pnpm lint && pnpm build && pnpm test"
+    "prepublishOnly": "pnpm lint && pnpm build && pnpm test",
+    "prepare": "husky"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
@@ -70,7 +71,10 @@
     "@types/ssh2": "^1.15.4",
     "dependency-cruiser": "^17.4.0",
     "eslint": "^10.4.0",
+    "eslint-config-prettier": "^10.1.8",
     "globals": "^17.6.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.0.5",
     "prettier": "^3.8.3",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.59.4",
@@ -80,6 +84,15 @@
     "onlyBuiltDependencies": [
       "cpu-features",
       "ssh2"
+    ]
+  },
+  "lint-staged": {
+    "*.{ts,js,cjs,mjs}": [
+      "eslint --fix --max-warnings=0",
+      "prettier --write"
+    ],
+    "*.{json,md,yml,yaml}": [
+      "prettier --write"
     ]
   }
 }
