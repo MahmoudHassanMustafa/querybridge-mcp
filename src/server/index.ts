@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { createRequire } from "node:module";
+import type { Server as HttpServer } from "node:http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { loadConfig } from "../config.js";
@@ -9,6 +10,7 @@ import { registerTools } from "../tools/index.js";
 import { registerResources } from "../resources.js";
 import { registerPrompts } from "../prompts.js";
 import { log, setLogSink, markLogSinkConnected } from "../log.js";
+import { startHttpTransport } from "./http.js";
 
 // Read version at runtime so it stays in sync with package.json (Changesets
 // only bumps package.json, not arbitrary string literals in source).
@@ -42,7 +44,38 @@ process.on("unhandledRejection", (reason) => {
   });
 });
 
-async function main() {
+/**
+ * Tiny CLI arg parser supporting both `--key=value` and `--key value`
+ * forms. Boolean flags (`--no-auth`) become `true`. Unknown args are
+ * ignored — startup remains usable even if a future operator passes a
+ * flag we don't yet recognise.
+ */
+function parseArgs(argv: string[]): Record<string, string | boolean> {
+  const out: Record<string, string | boolean> = {};
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (!a || !a.startsWith("--")) continue;
+    if (a.includes("=")) {
+      const eq = a.indexOf("=");
+      out[a.slice(2, eq)] = a.slice(eq + 1);
+    } else {
+      const key = a.slice(2);
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith("--")) {
+        out[key] = next;
+        i++;
+      } else {
+        out[key] = true;
+      }
+    }
+  }
+  return out;
+}
+
+async function main(): Promise<void> {
+  const args = parseArgs(process.argv.slice(2));
+  const transport = (args.transport as string) ?? "stdio";
+
   const config = loadConfig();
 
   const server = new McpServer(
@@ -90,21 +123,76 @@ async function main() {
     );
   }
 
-  // Graceful shutdown
-  const shutdown = async () => {
+  let httpServer: HttpServer | undefined;
+
+  // Graceful shutdown — close HTTP first (lets in-flight requests finish),
+  // then drain DB pools and SSH tunnels.
+  const shutdown = async (): Promise<void> => {
+    const srv = httpServer;
+    if (srv) {
+      await new Promise<void>((resolve) => srv.close(() => resolve()));
+    }
     await closeAll();
     process.exit(0);
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
-  // Start MCP transport
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  if (transport === "http") {
+    // Default to loopback so a naive launch doesn't expose anything.
+    // External binding requires explicit --host and --allowed-hosts.
+    const port = parseInt(String(args.port ?? "8080"), 10);
+    if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+      throw new Error(`Invalid --port: ${args.port}`);
+    }
+    const host = (args.host as string) ?? "127.0.0.1";
+    const path = (args.path as string) ?? "/mcp";
+    const allowedHosts = parseAllowedHosts(args["allowed-hosts"]);
+    const noAuth = args["no-auth"] === true;
+    const token = process.env.QUERYBRIDGE_MCP_HTTP_TOKEN || undefined;
+    const corsOrigin = (args["cors-origin"] as string) || undefined;
+
+    httpServer = await startHttpTransport(server, {
+      port,
+      host,
+      path,
+      token,
+      noAuth,
+      allowedHosts,
+      corsOrigin,
+    });
+    // Sink can flush from this point on — the HTTP transport is
+    // connected and the SDK will route notifications/* to whichever
+    // session is currently subscribed.
+    markLogSinkConnected();
+    return;
+  }
+
+  if (transport !== "stdio") {
+    throw new Error(
+      `Unknown --transport: ${transport}. Use "stdio" (default) or "http".`,
+    );
+  }
+
+  // Start MCP transport (stdio)
+  const stdio = new StdioServerTransport();
+  await server.connect(stdio);
   // Now that the transport is connected, the log sink can safely forward
   // notifications. Any log() before this point only writes to stderr.
   markLogSinkConnected();
   log("info", "server running on stdio");
+}
+
+/**
+ * Parse a comma-separated --allowed-hosts value. Returns an empty array
+ * when the flag wasn't passed.
+ */
+function parseAllowedHosts(raw: unknown): string[] {
+  if (typeof raw !== "string" || raw.length === 0) return [];
+  return raw
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter((s) => s.length > 0);
 }
 
 main().catch((err) => {
