@@ -409,6 +409,10 @@ export async function getRoutineDdl(
 ): Promise<string> {
   const rows = await queryWithTimeout<Array<Record<string, string>>>(
     connection,
+    // `type` is a TypeScript literal-union "PROCEDURE" | "FUNCTION";
+    // MySQL refuses `?` placeholders for the routine kind, so direct
+    // interpolation is unavoidable. db/name go through escapeId.
+    // eslint-disable-next-line no-restricted-syntax
     `SHOW CREATE ${type} ${escapeId(db)}.${escapeId(name)}`,
   );
   const key = type === "PROCEDURE" ? "Create Procedure" : "Create Function";

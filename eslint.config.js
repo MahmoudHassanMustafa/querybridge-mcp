@@ -18,8 +18,11 @@ export default tseslint.config(
       },
     },
     rules: {
-      // Project conventions: stderr-only logging, MCP transport on stdout
-      "no-console": ["error", { allow: ["error"] }],
+      // Project conventions: stderr-only logging, MCP transport on stdout.
+      // Business code uses log(), never console.*. Overrides below allow
+      // it in the two files that legitimately need it: log.ts (the logger
+      // itself) and src/server/cli.ts (operator-facing CLI prints).
+      "no-console": "error",
 
       // Catches things like `const v = obj.maybe!.thing` slipping in
       "@typescript-eslint/no-non-null-assertion": "warn",
@@ -47,17 +50,58 @@ export default tseslint.config(
         },
       ],
 
-      // Forbid string-interpolating user values into KILL/EXPLAIN/USE-style
-      // dynamic statements. The legitimate sites use Number.isInteger guards
-      // (kill_query) or escapeId (USE statements). Any new dynamic SQL needs
-      // a reviewer-justified eslint-disable.
       "no-restricted-syntax": [
-        "warn",
+        "error",
+
+        // ── Rule: tool handlers must be wrapped in toolHandler() ───────
+        //
+        // Without toolHandler the audit-log + sanitized-error envelope is
+        // bypassed and a thrown MySQL error leaks raw 'user'@'host'
+        // diagnostics to the LLM. CONVENTIONS.md §2.1 calls this a
+        // security boundary, not a convenience. The legal pattern is:
+        //
+        //   server.registerTool("name", config, toolHandler("name", async (args) => …))
+        //
+        // Bare arrow/function expressions passed directly as the handler
+        // are blocked here.
         {
           selector:
-            "TemplateLiteral[quasis.0.value.cooked=/\\bKILL\\s+/i][expressions.length>0]",
+            "CallExpression[callee.property.name='registerTool'] > ArrowFunctionExpression",
           message:
-            "Dynamic KILL: ensure the value is a verified positive integer (Number.isInteger), then justify with eslint-disable.",
+            "Wrap registerTool handlers in toolHandler(name, fn) — bypassing the wrapper skips audit logging and leaks raw MySQL errors to the LLM. See CONVENTIONS.md §2.1.",
+        },
+        {
+          selector:
+            "CallExpression[callee.property.name='registerTool'] > FunctionExpression",
+          message:
+            "Wrap registerTool handlers in toolHandler(name, fn) — bypassing the wrapper skips audit logging and leaks raw MySQL errors to the LLM. See CONVENTIONS.md §2.1.",
+        },
+
+        // ── Rule: no value interpolation into SQL template literals ────
+        //
+        // CONVENTIONS.md §6.2: "Values go through `?` placeholders."
+        // The narrow exception is `KILL QUERY <id>` where MySQL refuses
+        // placeholders — that path uses Number.isInteger guards and an
+        // explicit eslint-disable at the call site.
+        //
+        // This catches the most common SQL-injection bug shape: a bare
+        // identifier or member access spliced into a template literal
+        // whose first quasi looks like SQL. It does NOT catch
+        // CallExpression interpolations — those might be safe like
+        // escapeId(name) / qualifiedTable(db, table) or unsafe like
+        // fmtRow(userInput). Reviewers eyeball CallExpression cases;
+        // unsafe ones earn an eslint-disable with a justification.
+        {
+          selector:
+            "TemplateLiteral[quasis.0.value.cooked=/^\\s*(KILL|SELECT|INSERT|UPDATE|DELETE|JOIN|SHOW|EXPLAIN|CREATE|ALTER|DROP|TRUNCATE|REPLACE|RENAME|USE|GRANT|REVOKE)\\b/] > Identifier",
+          message:
+            "Interpolating a bare identifier into a SQL template literal. Use a `?` placeholder for values, or escapeId/qualifiedTable for identifiers. See CONVENTIONS.md §6.",
+        },
+        {
+          selector:
+            "TemplateLiteral[quasis.0.value.cooked=/^\\s*(KILL|SELECT|INSERT|UPDATE|DELETE|JOIN|SHOW|EXPLAIN|CREATE|ALTER|DROP|TRUNCATE|REPLACE|RENAME|USE|GRANT|REVOKE)\\b/] > MemberExpression",
+          message:
+            "Interpolating a member access into a SQL template literal. Use a `?` placeholder for values, or escapeId/qualifiedTable for identifiers. See CONVENTIONS.md §6.",
         },
       ],
 
@@ -67,7 +111,16 @@ export default tseslint.config(
       "no-async-promise-executor": "error",
     },
   },
-  // CLI exits via console.log; allow it there.
+  // log.ts IS the logger — console.error is the implementation, not a
+  // violation. The rule's job is to keep console.* out of *callers* of
+  // log().
+  {
+    files: ["src/log.ts"],
+    rules: {
+      "no-console": "off",
+    },
+  },
+  // CLI prints to stdout/stderr directly; that's its job.
   {
     files: ["src/server/cli.ts"],
     rules: {

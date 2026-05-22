@@ -96,8 +96,11 @@ export const handleGetUnusedIndexes = toolHandler(
     }
 
     const dropStatements = rows.map(
-      (idx) =>
-        `ALTER TABLE \`${idx.database}\`.\`${idx.table}\` DROP INDEX \`${idx.index}\`;`,
+      // Suggestion text returned to the operator — never executed by this
+      // server. Names come from information_schema and are quoted in
+      // backticks for the operator's copy/paste convenience.
+      // eslint-disable-next-line no-restricted-syntax
+      (idx) => `ALTER TABLE \`${idx.database}\`.\`${idx.table}\` DROP INDEX \`${idx.index}\`;`,
     );
 
     const output =
