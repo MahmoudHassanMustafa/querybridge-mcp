@@ -9,6 +9,7 @@ A Model Context Protocol (MCP) server that connects Claude Code to MySQL databas
 - **28 tools** for schema introspection, querying, ERD generation, programmability, operator admin, and cross-database diffing
 - **2 MCP resources** for browsable schema access
 - **4 MCP prompts** for guided database workflows
+- **Two transports** — local stdio (Claude Code) and remote Streamable HTTP with bearer auth (Cursor, n8n, hosted agents)
 - **SSH tunnel support** with password or private key authentication
 - **SSL/TLS support** for direct encrypted connections
 - **Multi-database** connections with independent configs
@@ -148,6 +149,68 @@ Notes:
 - Pin to a specific version (`:v0.4.1`) for reproducibility; `:latest` follows the current release.
 - The image runs as a non-root `node` user. Mounts must be readable by UID 1000.
 - Multi-arch: `linux/amd64` + `linux/arm64`. Apple Silicon and Linux servers work out of the box.
+
+### HTTP transport (remote MCP)
+
+`querybridge-mcp-server` ships two transports: **stdio** (default — what Claude Code uses) and **Streamable HTTP** (for Cursor, n8n, hosted agents, browser-based clients). The HTTP transport implements the [MCP Streamable HTTP spec](https://modelcontextprotocol.io/specification/2024-11-05/basic/transports) with stateful sessions so log forwarding and progress notifications work end-to-end.
+
+**Quick start (local):**
+
+```bash
+export QUERYBRIDGE_MCP_HTTP_TOKEN=$(openssl rand -base64 32)
+querybridge-mcp-server --transport=http --port=8080
+```
+
+Client config:
+
+```json
+{
+  "mcpServers": {
+    "querybridge-mcp": {
+      "type": "streamable-http",
+      "url": "http://127.0.0.1:8080/mcp",
+      "headers": { "Authorization": "Bearer <YOUR_TOKEN_HERE>" }
+    }
+  }
+}
+```
+
+**Flags:**
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--transport=stdio\|http` | `stdio` | |
+| `--port` | `8080` | |
+| `--host` | `127.0.0.1` | Loopback by default. Set `--host=0.0.0.0` to expose externally; the server then **requires** `--allowed-hosts`. |
+| `--path` | `/mcp` | The HTTP path the transport serves on. |
+| `--allowed-hosts` | (none) | Comma-separated Host-header allowlist. Required when binding to a non-loopback address. Defends against DNS-rebinding. |
+| `--no-auth` | off | Opt out of bearer auth. Logged as a warning on every startup. Useful for `127.0.0.1`-only dev setups. |
+| `--cors-origin` | (none) | Permissive CORS for a single origin. Skip unless a browser-based MCP client needs it. |
+
+**Environment variables:**
+
+- `QUERYBRIDGE_MCP_HTTP_TOKEN` — bearer token clients must send. **Required** unless `--no-auth` is set; the server refuses to start otherwise.
+
+**Security defaults (read these once before exposing the server):**
+
+- **Bearer required by default.** The two-key opt-out (token absent AND `--no-auth`) prevents accidentally disabling auth via env-var typo.
+- **Loopback-only by default.** External binding (`--host=0.0.0.0`) requires `--allowed-hosts` so a DNS-rebinding attack from a browser can't reach the server.
+- **No CORS by default.** Same-origin RPC is the norm for MCP; cross-origin is opt-in.
+- **All security guarantees of the stdio transport still apply** — read-only enforcement, LOAD INFILE block, KILL QUERY cancellation, error sanitization. The HTTP layer is just a different envelope.
+
+**Behind a reverse proxy (nginx, Caddy, etc.):**
+
+Run the server on loopback (`--host=127.0.0.1`) and let the proxy handle TLS + external exposure. The proxy must forward the `Authorization` header. Don't add `--allowed-hosts` in this setup — the proxy already filters Host.
+
+**Container example:**
+
+```bash
+docker run --rm -p 8080:8080 \
+  -e QUERYBRIDGE_MCP_CONFIG_JSON='{"connections":[...]}' \
+  -e QUERYBRIDGE_MCP_HTTP_TOKEN="$YOUR_TOKEN" \
+  ghcr.io/mahmoudhassanmustafa/querybridge-mcp:latest \
+  --transport=http --host=0.0.0.0 --allowed-hosts=localhost
+```
 
 ## CLI
 

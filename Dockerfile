@@ -65,6 +65,17 @@ USER node
 # so would short-circuit the inline-JSON and env-var paths.
 ENV NODE_ENV=production
 
-# MCP uses stdio — clients connect by piping into the container's
-# stdin/stdout. Run with `docker run -i --rm` so the TTY is wired up.
+# Default port for the optional HTTP transport. Only listens when
+# the container is started with `--transport=http`; harmless otherwise.
+EXPOSE 8080
+
+# MCP uses stdio by default — clients connect by piping into the
+# container's stdin/stdout. Run with `docker run -i --rm`.
+#
+# For HTTP transport instead, pass the flag and publish the port:
+#   docker run --rm -p 8080:8080 \
+#     -e QUERYBRIDGE_MCP_CONFIG_JSON='...' \
+#     -e QUERYBRIDGE_MCP_HTTP_TOKEN=... \
+#     ghcr.io/<owner>/querybridge-mcp:latest \
+#     --transport=http --host=0.0.0.0 --allowed-hosts=localhost
 ENTRYPOINT ["node", "dist/server/index.js"]

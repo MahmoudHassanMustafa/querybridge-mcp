@@ -16,7 +16,7 @@ The server is organised in three layers. Imports must flow downward only.
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│  Transport          src/server/{index,cli}.ts            │
+│  Transport          src/server/{index,cli,http}.ts       │
 │  (MCP wiring,       src/resources.ts, src/prompts.ts     │
 │   process lifecycle)                                     │
 └──────────────────────────────────────────────────────────┘

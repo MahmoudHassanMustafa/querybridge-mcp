@@ -17,7 +17,7 @@
 // shape duplicated the infra regex across two rules; if you forgot
 // either site, layering would silently drift.
 const TRANSPORT =
-  "^src/server/(index|cli)\\.ts$|^src/(resources|prompts)\\.ts$";
+  "^src/server/(index|cli|http)\\.ts$|^src/(resources|prompts)\\.ts$";
 const TOOLS = "^src/tools/";
 const INFRA =
   "^src/(connection|ssh-tunnel|log|tool-runtime|paths|format|limits|schema|config|errors|types)\\.ts$|^src/(sql|db|types)/";
