@@ -10,6 +10,7 @@ import { registerCompareTools } from "./compare/index.js";
 import { registerCompareSchemaFileTool } from "./compare-schema-file.js";
 import { registerDiagnosticsTools } from "./diagnostics-tools.js";
 import { registerStreamingTools } from "./streaming-tools.js";
+import { registerTraverseTools } from "./traverse-tools.js";
 
 export function registerTools(server: McpServer) {
   registerConnectionTools(server);
@@ -23,4 +24,5 @@ export function registerTools(server: McpServer) {
   registerCompareSchemaFileTool(server);
   registerDiagnosticsTools(server);
   registerStreamingTools(server);
+  registerTraverseTools(server);
 }
