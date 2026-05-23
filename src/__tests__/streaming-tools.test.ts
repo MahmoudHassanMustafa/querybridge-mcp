@@ -14,6 +14,7 @@ import { MockRunner } from "./utils/mock-runner.js";
 import {
   handleStreamingQuery,
   pumpStream,
+  serializerFor,
   validateOutputPath,
 } from "../tools/streaming-tools.js";
 
@@ -297,9 +298,7 @@ describe("pumpStream", () => {
     // buffer; the killIssued guard prevents re-firing).
     expect(killerCalls).toEqual([999]);
 
-    const lines = (
-      await readFile(path.join(TMP, "capped-rows.ndjson"), "utf8")
-    )
+    const lines = (await readFile(path.join(TMP, "capped-rows.ndjson"), "utf8"))
       .trim()
       .split("\n");
     expect(lines).toHaveLength(100);
@@ -360,5 +359,96 @@ describe("pumpStream", () => {
 
     expect(result.rowsWritten).toBe(STREAM_PROGRESS_ROW_INTERVAL + 5);
     expect(result.truncated).toBe(false);
+  });
+});
+
+// ── format serializers (CSV + JSON-array) ─────────────────────────
+
+describe("pumpStream output formats", () => {
+  async function streamThree(serializer: ReturnType<typeof serializerFor>) {
+    const target = path.join(TMP, "out");
+    const writer = createWriteStream(target, { encoding: "utf8" });
+    await once(writer, "open");
+    const rows = [
+      { id: 1, name: "alice", note: null },
+      { id: 2, name: "b,ob", note: 'has "quote"' },
+      { id: 3, name: "carol\nnewline", note: { nested: true } },
+    ];
+    await pumpStream(
+      Readable.from(rows, { objectMode: true }),
+      writer,
+      async () => {},
+      42,
+      { maxRows: 100, maxBytes: 100_000 },
+      undefined,
+      serializer,
+    );
+    writer.end();
+    await once(writer, "finish");
+    return readFile(target, "utf8");
+  }
+
+  it("ndjson: one JSON object per line, no header, no footer", async () => {
+    const out = await streamThree(serializerFor("ndjson"));
+    const lines = out.split("\n").filter((l) => l.length > 0);
+    expect(lines).toHaveLength(3);
+    expect(JSON.parse(lines[0]!)).toEqual({ id: 1, name: "alice", note: null });
+    expect(JSON.parse(lines[2]!)).toEqual({
+      id: 3,
+      name: "carol\nnewline",
+      note: { nested: true },
+    });
+  });
+
+  it("json: produces a single valid JSON array round-trippable through JSON.parse", async () => {
+    const out = await streamThree(serializerFor("json"));
+    // Has the array brackets and is valid JSON.
+    expect(out.startsWith("[")).toBe(true);
+    expect(out.trimEnd().endsWith("]")).toBe(true);
+    const parsed = JSON.parse(out) as unknown[];
+    expect(parsed).toHaveLength(3);
+    expect(parsed[0]).toEqual({ id: 1, name: "alice", note: null });
+  });
+
+  it("json: emits the closing `]` even when zero rows were streamed", async () => {
+    const target = path.join(TMP, "empty.json");
+    const writer = createWriteStream(target, { encoding: "utf8" });
+    await once(writer, "open");
+    await pumpStream(
+      Readable.from([], { objectMode: true }),
+      writer,
+      async () => {},
+      undefined,
+      { maxRows: 100, maxBytes: 100_000 },
+      undefined,
+      serializerFor("json"),
+    );
+    writer.end();
+    await once(writer, "finish");
+    const content = await readFile(target, "utf8");
+    // Empty array should still be valid JSON.
+    expect(JSON.parse(content)).toEqual([]);
+  });
+
+  it("csv: emits a header row from the first row's keys", async () => {
+    const out = await streamThree(serializerFor("csv"));
+    const lines = out.split("\n");
+    expect(lines[0]).toBe("id,name,note");
+  });
+
+  it("csv: quotes cells with commas, newlines, or embedded quotes; doubles internal quotes", async () => {
+    const out = await streamThree(serializerFor("csv"));
+    // Row 2: name = "b,ob" → quoted because of comma
+    //        note = 'has "quote"' → quoted with internal quotes doubled
+    expect(out).toContain(`2,"b,ob","has ""quote"""`);
+    // Row 3: name has a newline → must be quoted
+    expect(out).toContain(`3,"carol`);
+    expect(out).toContain(`newline","{""nested"":true}"`);
+  });
+
+  it("csv: renders null as an empty cell", async () => {
+    const out = await streamThree(serializerFor("csv"));
+    // Row 1: note is null → empty cell, no quotes
+    expect(out).toMatch(/\n1,alice,\n/);
   });
 });

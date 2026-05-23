@@ -113,7 +113,8 @@ export async function validateOutputPath(
       return {
         ok: false,
         resolved,
-        reason: "output_path already exists; pass overwrite=true to replace it.",
+        reason:
+          "output_path already exists; pass overwrite=true to replace it.",
       };
     }
   } catch (err) {
@@ -144,7 +145,16 @@ export const StreamingQueryArgsSchema = {
   output_path: z
     .string()
     .describe(
-      "Filesystem path for the NDJSON output. Relative paths resolve against the server's cwd.",
+      "Filesystem path for the streamed output. Relative paths resolve against the server's cwd. " +
+        "Recommended extensions match the chosen format: `.ndjson` (default), `.json` for JSON-array, `.csv` for CSV.",
+    ),
+  format: z
+    .enum(["ndjson", "json", "csv"])
+    .optional()
+    .describe(
+      "Output format. `ndjson` (default) — one JSON object per line; best for streaming consumers. " +
+        "`json` — a JSON array `[ {...}, ... ]` document; pretty for jq + downstream tools that expect a single JSON value. " +
+        "`csv` — RFC 4180 with a header row; objects/arrays in a cell are JSON-stringified.",
     ),
   max_rows: z
     .number()
@@ -183,6 +193,7 @@ type StreamingQueryArgs = {
   max_rows?: number | undefined;
   max_bytes?: number | undefined;
   overwrite?: boolean | undefined;
+  format?: StreamFormat | undefined;
 };
 
 // ── streaming primitive ────────────────────────────────────────────
@@ -206,17 +217,104 @@ interface CallbackQueryable {
 }
 
 /**
- * Pump rows from mysql2 into a NDJSON write stream until the caps are
- * hit or the source exhausts. On cap-hit we issue `KILL QUERY` against
- * a sibling pool connection so MySQL stops sending; the for-await over
- * the stream then sees an ER_QUERY_INTERRUPTED error which we treat as
- * a clean truncation rather than a failure.
+ * Output-format serializer. Drives `pumpStream`'s row → bytes
+ * conversion and lets the tool emit NDJSON (default), JSON-array, or
+ * CSV with the same streaming machinery.
+ *
+ * Lifecycle:
+ *   1. `start(firstRow)` is called once with the first row before any
+ *      `row()` calls. Lets CSV emit a header line, JSON-array emit
+ *      `[`, etc.
+ *   2. `row(row, rowIndex)` is called for each row in order, including
+ *      the first. The serializer is responsible for any required
+ *      separator (comma in JSON-array).
+ *   3. `end(rowCount)` is called once after the last row, even if
+ *      zero rows were streamed. Lets JSON-array close `]`, etc.
+ *
+ * Every method returns the bytes-as-string to append to the stream.
+ * Empty string is a valid no-op (NDJSON's `start`/`end`).
+ */
+export interface Serializer {
+  start(firstRow: Record<string, unknown>): string;
+  row(row: Record<string, unknown>, rowIndex: number): string;
+  end(rowCount: number): string;
+}
+
+const NDJSON_SERIALIZER: Serializer = {
+  start: () => "",
+  row: (r) => JSON.stringify(r) + "\n",
+  end: () => "",
+};
+
+const JSON_ARRAY_SERIALIZER: Serializer = {
+  start: () => "[",
+  row: (r, i) => (i === 0 ? "\n  " : ",\n  ") + JSON.stringify(r),
+  // When zero rows arrive, `start()` never fires (pumpStream only
+  // calls it once it sees the first row), so the file would otherwise
+  // contain just `]\n`. Emit a self-contained `[]\n` instead so the
+  // empty-result file is still valid JSON.
+  end: (count) => (count > 0 ? "\n]\n" : "[]\n"),
+};
+
+/**
+ * RFC 4180-style CSV cell. Quoting kicks in only when the value
+ * contains a comma, newline, or double quote; embedded quotes are
+ * doubled. Null becomes empty. Objects/arrays are JSON-stringified
+ * (so a column holding `{"a": 1}` round-trips as the quoted JSON
+ * blob `"{""a"":1}"`).
+ */
+function csvCell(v: unknown): string {
+  if (v == null) return "";
+  if (v instanceof Date) return v.toISOString();
+  const s = typeof v === "object" ? JSON.stringify(v) : String(v);
+  if (/[,\r\n"]/.test(s)) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+const CSV_SERIALIZER: Serializer = {
+  start: (firstRow) => Object.keys(firstRow).map(csvCell).join(",") + "\n",
+  row: (r) => Object.values(r).map(csvCell).join(",") + "\n",
+  end: () => "",
+};
+
+/**
+ * Map the public `format` arg to a Serializer. Exported as a function
+ * (not a switch in pumpStream) so the unit tests can drive each
+ * serializer in isolation.
+ */
+export function serializerFor(format: StreamFormat): Serializer {
+  switch (format) {
+    case "json":
+      return JSON_ARRAY_SERIALIZER;
+    case "csv":
+      return CSV_SERIALIZER;
+    case "ndjson":
+    default:
+      return NDJSON_SERIALIZER;
+  }
+}
+
+export type StreamFormat = "ndjson" | "json" | "csv";
+
+/**
+ * Pump rows from mysql2 into a write stream until the caps are hit
+ * or the source exhausts. On cap-hit we issue `KILL QUERY` against
+ * a sibling pool connection so MySQL stops sending; the for-await
+ * over the stream then sees an ER_QUERY_INTERRUPTED error which we
+ * treat as a clean truncation rather than a failure.
+ *
+ * The serializer parameter is optional and defaults to NDJSON — the
+ * pre-existing behavior. Test call sites that don't pass a serializer
+ * (column_stats tests, streaming-tools tests) keep working unchanged.
  *
  * Exported for unit tests — driving this with a synthetic `Readable`
- * lets us verify the progress-notification cadence and the cap-stop
- * killer wiring without spinning up testcontainers. Production callers
- * should still reach `handleStreamingQuery` so they get the SQL gate,
- * path validation, and worker lifecycle around it.
+ * lets us verify the progress-notification cadence, the cap-stop
+ * killer wiring, AND the per-format byte sequences without spinning
+ * up testcontainers. Production callers should still reach
+ * `handleStreamingQuery` so they get the SQL gate, path validation,
+ * and worker lifecycle around it.
  */
 export async function pumpStream(
   rowStream: NodeJS.ReadableStream,
@@ -225,16 +323,33 @@ export async function pumpStream(
   connectionId: number | undefined,
   caps: { maxRows: number; maxBytes: number },
   extra: ToolExtra | undefined,
+  serializer: Serializer = NDJSON_SERIALIZER,
 ): Promise<StreamResult> {
   let rowsWritten = 0;
   let bytesWritten = 0;
   let truncated = false;
   let killIssued = false;
+  let startEmitted = false;
 
   for await (const row of rowStream as AsyncIterable<unknown>) {
     if (truncated) continue;
 
-    const line = JSON.stringify(row) + "\n";
+    const rowObj = row as Record<string, unknown>;
+
+    if (!startEmitted) {
+      startEmitted = true;
+      const startBytes = serializer.start(rowObj);
+      if (startBytes.length > 0) {
+        // Byte cap doesn't apply to the header — it's bounded, and
+        // refusing to start would surprise the operator. Emit always.
+        if (!writer.write(startBytes)) {
+          await once(writer, "drain");
+        }
+        bytesWritten += Buffer.byteLength(startBytes, "utf8");
+      }
+    }
+
+    const line = serializer.row(rowObj, rowsWritten);
     const lineBytes = Buffer.byteLength(line, "utf8");
 
     if (
@@ -269,6 +384,20 @@ export async function pumpStream(
     }
   }
 
+  // Close the serialization (e.g. JSON-array's trailing `]`). Skip
+  // when truncated — the partial output isn't a valid JSON document
+  // anyway and writing `]` would imply otherwise. NDJSON / CSV use
+  // empty `end()` so the truncated case is identical for them.
+  if (!truncated) {
+    const endBytes = serializer.end(rowsWritten);
+    if (endBytes.length > 0) {
+      if (!writer.write(endBytes)) {
+        await once(writer, "drain");
+      }
+      bytesWritten += Buffer.byteLength(endBytes, "utf8");
+    }
+  }
+
   return { rowsWritten, bytesWritten, truncated };
 }
 
@@ -280,7 +409,11 @@ export async function pumpStream(
 function isQueryInterrupted(err: unknown): boolean {
   if (typeof err !== "object" || err === null) return false;
   const e = err as { errno?: number; code?: string; sqlState?: string };
-  return e.errno === 1317 || e.code === "ER_QUERY_INTERRUPTED" || e.sqlState === "70100";
+  return (
+    e.errno === 1317 ||
+    e.code === "ER_QUERY_INTERRUPTED" ||
+    e.sqlState === "70100"
+  );
 }
 
 // ── handler ────────────────────────────────────────────────────────
@@ -386,6 +519,7 @@ export async function handleStreamingQuery(
           connectionId,
           { maxRows, maxBytes },
           extra,
+          serializerFor(args.format ?? "ndjson"),
         );
       } catch (err) {
         // ER_QUERY_INTERRUPTED is the expected outcome of our own KILL —
@@ -434,6 +568,7 @@ export async function handleStreamingQuery(
       // the connection's configured timeout.
       return toolOk(text, {
         output_path: pathCheck.resolved,
+        format: args.format ?? "ndjson",
         rows_written: result.rowsWritten,
         bytes_written: result.bytesWritten,
         truncated: result.truncated,
@@ -465,9 +600,8 @@ export function registerStreamingTools(server: McpServer) {
         openWorldHint: true,
       },
     },
-    toolHandler<StreamingQueryArgs>(
-      "streaming_query",
-      (input, callExtra) => handleStreamingQuery(input, callExtra),
+    toolHandler<StreamingQueryArgs>("streaming_query", (input, callExtra) =>
+      handleStreamingQuery(input, callExtra),
     ),
   );
 }
