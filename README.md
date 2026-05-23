@@ -516,6 +516,17 @@ Or with custom certificates:
 | `get_unused_indexes`    | Detect secondary indexes with zero reads in `performance_schema` and produce DROP statements |
 | `get_charset_collation` | Show character set and collation at database, table, and column levels                       |
 
+### Diagnostics
+
+| Tool             | Description                                                                                                                                                                                                               |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `server_info`    | Bird's-eye snapshot — version, hostname, uptime, thread counts (running/connected/max), key charset & collation, SQL mode, time zone, read-only flags                                                                     |
+| `show_variables` | `SHOW VARIABLES` with `pattern` (LIKE) + `scope` (GLOBAL / SESSION) filters                                                                                                                                               |
+| `show_status`    | `SHOW STATUS` with the same filter / scope pattern — runtime counters                                                                                                                                                     |
+| `current_locks`  | Active InnoDB lock-wait pairs from `performance_schema.data_lock_waits` joined to thread + statement info. Surfaces every blocker → blocked relationship with the SQL each thread is running. Needs SELECT on perf_schema |
+| `innodb_status`  | Raw `SHOW ENGINE INNODB STATUS` dump (transactions, buffer pool, LSN). Parses the `LATEST DETECTED DEADLOCK` section separately when present                                                                              |
+| `slow_queries`   | Top query digests from `performance_schema.events_statements_summary_by_digest`. Sort by total / avg / max time, or count. Needs SELECT on perf_schema                                                                    |
+
 ### Cross-database diffing
 
 | Tool                  | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
@@ -597,6 +608,7 @@ querybridge-mcp/
       routines/           list_routines, get_routine_ddl, list_triggers, get_trigger_ddl, list_events, get_event_ddl
       erd-tool.ts         generate_erd
       admin-tools.ts      list_processes, kill_query, get_unused_indexes, get_charset_collation
+      diagnostics-tools.ts server_info, show_variables, show_status, current_locks, innodb_status, slow_queries
       compare/            compare_schemas (fetchers/diff/render pipeline)
   dist/                   Compiled output
   config.json             Your connections (gitignored)
