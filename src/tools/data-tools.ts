@@ -365,16 +365,21 @@ export function registerDataTools(server: McpServer) {
   server.registerTool(
     "get_table_stats",
     {
-      title: "Table statistics",
+      title: "Table statistics (one or all tables)",
       description:
-        "Show table statistics: row counts, data size, index size, auto_increment, timestamps",
+        "Show table statistics: row counts, data size, index size, auto_increment, " +
+        "and create/update timestamps. Pass `table` for a single table; omit it to " +
+        "get every table in the database in one shot (useful for 'which tables are " +
+        "huge?' or 'when was each table last written?').",
       inputSchema: {
         connection: z.string().describe("Connection name"),
         database: z.string().optional().describe("Database name"),
         table: z
           .string()
           .optional()
-          .describe("Table name (omit for all tables)"),
+          .describe(
+            "Specific table to inspect. Omit to return stats for every table in the database.",
+          ),
       },
       annotations: READ_ONLY_TOOL_ANNOTATIONS,
     },
