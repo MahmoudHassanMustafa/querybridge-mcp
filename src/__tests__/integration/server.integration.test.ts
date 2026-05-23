@@ -83,9 +83,7 @@ beforeAll(async () => {
   //     and drop a temp database on the scratch connection. MySQL
   //     ships the container's default user with rights to *its own*
   //     database only — global DDL needs an explicit grant.
-  await seed.query(
-    "GRANT PROCESS, CREATE, DROP ON *.* TO 'testuser'@'%'",
-  );
+  await seed.query("GRANT PROCESS, CREATE, DROP ON *.* TO 'testuser'@'%'");
   await seed.query("FLUSH PRIVILEGES");
   await seed.end();
 }, CONTAINER_START_TIMEOUT_MS);
@@ -546,5 +544,177 @@ describe("compare_schema_file — end-to-end against MySQL", () => {
       .map((r) => r.Database)
       .filter((n) => !beforeNames.has(n));
     expect(newDbs).toEqual([]);
+  });
+});
+
+// ── column_stats against the real container ────────────────────────
+
+import { handleColumnStats } from "../../tools/data-tools.js";
+
+describe("column_stats — end-to-end against MySQL", () => {
+  const NAME = "ro_cstats";
+
+  beforeAll(async () => {
+    await initConnection({ ...baseConfig, name: NAME, readonly: true });
+
+    // Seed a column-profiling fixture with mixed types and known
+    // distributions, on top of the existing users/orders schema.
+    const seed = await mysql.createConnection({
+      host: container.getHost(),
+      port: container.getPort(),
+      user: "root",
+      password: container.getRootPassword(),
+      database: "testdb",
+    });
+    try {
+      await seed.query(`
+        CREATE TABLE IF NOT EXISTS cstats_fixture (
+          id INT PRIMARY KEY AUTO_INCREMENT,
+          status VARCHAR(16) NOT NULL,
+          age INT,
+          payload BLOB,
+          ratio DECIMAL(5,2),
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      // Known distribution:
+      //   - status: 60 active, 30 pending, 10 banned (3 distinct, 0 null)
+      //   - age: 1..100, plus 10 NULL (110 rows total)
+      //   - ratio: 0.50, 1.00, 2.50 cycled across non-null rows
+      //   - payload: NULL for half the rows
+      const values: string[] = [];
+      for (let i = 0; i < 60; i++)
+        values.push(`('active', ${i}, _binary 'x', 0.50)`);
+      for (let i = 0; i < 30; i++)
+        values.push(`('pending', ${i + 60}, NULL, 1.00)`);
+      for (let i = 0; i < 10; i++)
+        values.push(`('banned', ${i + 90}, _binary 'y', 2.50)`);
+      for (let i = 0; i < 10; i++) values.push(`('active', NULL, NULL, NULL)`);
+      await seed.query(
+        `INSERT INTO cstats_fixture (status, age, payload, ratio) VALUES ${values.join(",")}`,
+      );
+    } finally {
+      await seed.end();
+    }
+  }, CONTAINER_START_TIMEOUT_MS);
+
+  it("reports total rows + per-column non_null and distinct counts that match the seeded fixture", async () => {
+    const r = await handleColumnStats({
+      connection: NAME,
+      database: "testdb",
+      table: "cstats_fixture",
+    });
+    expect("isError" in r && r.isError).toBeFalsy();
+    const sc = (r as { structuredContent: Record<string, unknown> })
+      .structuredContent;
+    expect(sc.total_rows).toBe(110);
+    const cols = sc.columns as Array<{
+      name: string;
+      count_non_null: number;
+      count_distinct: number;
+      null_pct: number;
+    }>;
+    const status = cols.find((c) => c.name === "status")!;
+    expect(status.count_non_null).toBe(110);
+    expect(status.count_distinct).toBe(3);
+    expect(status.null_pct).toBe(0);
+
+    const age = cols.find((c) => c.name === "age")!;
+    expect(age.count_non_null).toBe(100);
+    expect(age.null_pct).toBeCloseTo((10 / 110) * 100);
+  });
+
+  it("computes numeric MIN/MAX/AVG for numeric columns", async () => {
+    const r = await handleColumnStats({
+      connection: NAME,
+      database: "testdb",
+      table: "cstats_fixture",
+      columns: ["age"],
+    });
+    const cols = (
+      r as {
+        structuredContent: {
+          columns: Array<{
+            name: string;
+            min: number;
+            max: number;
+            avg: number;
+          }>;
+        };
+      }
+    ).structuredContent.columns;
+    const age = cols[0]!;
+    expect(age.min).toBe(0);
+    expect(age.max).toBe(99);
+    expect(age.avg).toBeCloseTo(49.5);
+  });
+
+  it("skips MIN/MAX/AVG on BLOB columns and records a note", async () => {
+    const r = await handleColumnStats({
+      connection: NAME,
+      database: "testdb",
+      table: "cstats_fixture",
+      columns: ["payload"],
+    });
+    const cols = (
+      r as {
+        structuredContent: {
+          columns: Array<{
+            name: string;
+            min: unknown;
+            max: unknown;
+            avg: number | null;
+            notes?: string[];
+          }>;
+        };
+      }
+    ).structuredContent.columns;
+    const payload = cols[0]!;
+    expect(payload.min).toBeNull();
+    expect(payload.max).toBeNull();
+    expect(payload.avg).toBeNull();
+    expect(payload.notes).toBeDefined();
+    expect(payload.notes!.some((n) => /min.*max/i.test(n))).toBe(true);
+  });
+
+  it("returns top-N most common values per column when top_n is set", async () => {
+    const r = await handleColumnStats({
+      connection: NAME,
+      database: "testdb",
+      table: "cstats_fixture",
+      columns: ["status"],
+      top_n: 5,
+    });
+    const cols = (
+      r as {
+        structuredContent: {
+          columns: Array<{
+            name: string;
+            top_values?: Array<{ value: unknown; count: number }>;
+          }>;
+        };
+      }
+    ).structuredContent.columns;
+    const status = cols[0]!;
+    expect(status.top_values).toBeDefined();
+    // 70 active (60 + 10 with NULL age), 30 pending, 10 banned.
+    expect(status.top_values![0]).toEqual({ value: "active", count: 70 });
+    expect(status.top_values![1]).toEqual({ value: "pending", count: 30 });
+    expect(status.top_values![2]).toEqual({ value: "banned", count: 10 });
+  });
+
+  it("returns TABLE_NOT_FOUND for a non-existent table with a list_tables suggestion", async () => {
+    const r = await handleColumnStats({
+      connection: NAME,
+      database: "testdb",
+      table: "definitely_does_not_exist",
+    });
+    expect("isError" in r && r.isError).toBe(true);
+    const sc = r.structuredContent as {
+      code: string;
+      suggestions: Array<{ tool: string }>;
+    };
+    expect(sc.code).toBe("TABLE_NOT_FOUND");
+    expect(sc.suggestions.map((s) => s.tool)).toContain("list_tables");
   });
 });

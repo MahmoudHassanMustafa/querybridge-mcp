@@ -484,10 +484,11 @@ Or with custom certificates:
 
 ### Data inspection
 
-| Tool              | Description                                 |
-| ----------------- | ------------------------------------------- |
-| `get_table_stats` | Row counts, data/index sizes, timestamps    |
-| `sample_data`     | Preview rows from a table (default: 5 rows) |
+| Tool              | Description                                                                                                                                                                                            |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `get_table_stats` | Row counts, data/index sizes, timestamps                                                                                                                                                               |
+| `sample_data`     | Preview rows from a table (default: 5 rows)                                                                                                                                                            |
+| `column_stats`    | Per-column profile — null %, distinct count, min/max/avg, optional top-N most common values. One combined-aggregation query per call; type-aware metric selection (no AVG on text, no MIN/MAX on BLOB) |
 
 ### Stored routines and programmability
 
@@ -592,7 +593,7 @@ querybridge-mcp/
       schema/             list_tables, describe_table, get_ddl, get_foreign_keys, get_indexes, search_columns, list_views, describe_view, get_view_ddl
       query-tools.ts      execute_query, explain_query
       streaming-tools.ts  streaming_query
-      data-tools.ts       sample_data, get_table_stats
+      data-tools.ts       sample_data, get_table_stats, column_stats
       routines/           list_routines, get_routine_ddl, list_triggers, get_trigger_ddl, list_events, get_event_ddl
       erd-tool.ts         generate_erd
       admin-tools.ts      list_processes, kill_query, get_unused_indexes, get_charset_collation
