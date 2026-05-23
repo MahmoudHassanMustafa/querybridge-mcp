@@ -84,6 +84,11 @@ beforeAll(async () => {
   //     ships the container's default user with rights to *its own*
   //     database only — global DDL needs an explicit grant.
   await seed.query("GRANT PROCESS, CREATE, DROP ON *.* TO 'testuser'@'%'");
+  // SELECT on performance_schema for the diagnostics pack
+  // (current_locks reads data_lock_waits; slow_queries reads
+  // events_statements_summary_by_digest). In production this is the
+  // standard grant for any monitoring user.
+  await seed.query("GRANT SELECT ON performance_schema.* TO 'testuser'@'%'");
   await seed.query("FLUSH PRIVILEGES");
   await seed.end();
 }, CONTAINER_START_TIMEOUT_MS);
@@ -716,5 +721,117 @@ describe("column_stats — end-to-end against MySQL", () => {
     };
     expect(sc.code).toBe("TABLE_NOT_FOUND");
     expect(sc.suggestions.map((s) => s.tool)).toContain("list_tables");
+  });
+});
+
+// ── diagnostics pack against the real container ─────────────────────
+
+import {
+  handleServerInfo,
+  handleShowVariables,
+  handleShowStatus,
+  handleCurrentLocks,
+  handleInnodbStatus,
+  handleSlowQueries,
+} from "../../tools/diagnostics-tools.js";
+
+describe("diagnostics pack — end-to-end against MySQL", () => {
+  const NAME = "ro_diag";
+
+  beforeAll(async () => {
+    await initConnection({ ...baseConfig, name: NAME, readonly: true });
+  }, CONTAINER_START_TIMEOUT_MS);
+
+  it("server_info returns a real version + uptime + thread counts", async () => {
+    const r = await handleServerInfo({ connection: NAME });
+    expect("isError" in r && r.isError).toBeFalsy();
+    const sc = (r as { structuredContent: Record<string, unknown> })
+      .structuredContent;
+    expect(typeof sc.version).toBe("string");
+    expect(sc.version as string).toMatch(/^8\./); // mysql:8.4 container
+    expect(typeof sc.uptime_seconds).toBe("number");
+    expect(sc.uptime_seconds as number).toBeGreaterThan(0);
+    expect(typeof sc.threads_connected).toBe("number");
+    expect(sc.character_set_server).toBe("utf8mb4");
+  });
+
+  it("show_variables filters by LIKE pattern", async () => {
+    const r = await handleShowVariables({
+      connection: NAME,
+      pattern: "version%",
+    });
+    const vars = (
+      r as {
+        structuredContent: {
+          variables: Array<{ Variable_name: string; Value: string }>;
+        };
+      }
+    ).structuredContent.variables;
+    expect(vars.length).toBeGreaterThan(0);
+    // Every match must start with "version" (LIKE 'version%').
+    for (const v of vars) {
+      expect(v.Variable_name.toLowerCase()).toMatch(/^version/);
+    }
+  });
+
+  it("show_status returns a non-empty Threads_% counter set", async () => {
+    const r = await handleShowStatus({
+      connection: NAME,
+      pattern: "Threads_%",
+    });
+    const counters = (
+      r as {
+        structuredContent: {
+          counters: Array<{ Variable_name: string; Value: string }>;
+        };
+      }
+    ).structuredContent.counters;
+    expect(counters.length).toBeGreaterThanOrEqual(4); // Threads_cached/connected/created/running
+    const names = counters.map((c) => c.Variable_name);
+    expect(names).toContain("Threads_connected");
+    expect(names).toContain("Threads_running");
+  });
+
+  it("current_locks returns an empty list on an idle server", async () => {
+    // No deliberate lock waits in the test fixture — the perf-schema
+    // table should be queried successfully and return zero rows.
+    const r = await handleCurrentLocks({ connection: NAME });
+    expect("isError" in r && r.isError).toBeFalsy();
+    expect((r as { content: Array<{ text: string }> }).content[0]?.text).toBe(
+      "No active lock waits.",
+    );
+  });
+
+  it("innodb_status returns a real status dump and no deadlock", async () => {
+    const r = await handleInnodbStatus({ connection: NAME });
+    const sc = r.structuredContent as {
+      status_text: string;
+      latest_deadlock: string | null;
+    };
+    expect(sc.status_text.length).toBeGreaterThan(100);
+    // The dump always contains the BACKGROUND THREAD header on a
+    // healthy InnoDB instance.
+    expect(sc.status_text).toContain("BACKGROUND THREAD");
+    // No deadlock seeded by the fixture.
+    expect(sc.latest_deadlock).toBeNull();
+  });
+
+  it("slow_queries returns an array (possibly empty) without erroring", async () => {
+    // Whether anything is recorded depends on what the other suites
+    // ran first against this container. The key assertion is that
+    // the performance_schema query succeeds and the response shape
+    // is right.
+    const r = await handleSlowQueries({
+      connection: NAME,
+      limit: 5,
+      sort_by: "count",
+    });
+    expect("isError" in r && r.isError).toBeFalsy();
+    const sc = r.structuredContent as {
+      sort_by: string;
+      queries: unknown[];
+    };
+    expect(sc.sort_by).toBe("count");
+    expect(Array.isArray(sc.queries)).toBe(true);
   });
 });
