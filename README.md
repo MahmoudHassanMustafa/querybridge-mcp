@@ -486,7 +486,7 @@ Or with custom certificates:
 
 | Tool              | Description                                                                                                                                                                                            |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `get_table_stats` | Row counts, data/index sizes, timestamps. Pass `table` for one table; omit it to get every table in the database in one call (the "which tables are huge?" mode)                                       |
+| `get_table_stats` | Row counts, data/index sizes, timestamps. Three modes: `table` for one, `tables: [...]` for a subset in one call, or omit both for every table (the "which tables are huge?" mode)                     |
 | `sample_data`     | Preview rows from a table (default: 5 rows)                                                                                                                                                            |
 | `column_stats`    | Per-column profile — null %, distinct count, min/max/avg, optional top-N most common values. One combined-aggregation query per call; type-aware metric selection (no AVG on text, no MIN/MAX on BLOB) |
 

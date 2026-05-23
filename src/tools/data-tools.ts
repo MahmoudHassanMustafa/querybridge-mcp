@@ -18,20 +18,50 @@ export const handleGetTableStats = toolHandler(
     connection,
     database,
     table,
+    tables: tablesArg,
   }: {
     connection: string;
     database?: string | undefined;
     table?: string | undefined;
+    tables?: string[] | undefined;
   }) => {
     const r = resolveDb(connection, database);
     if ("error" in r) return r.error;
 
-    const tables = await getTableStats(connection, r.db, table);
-    if (tables.length === 0) {
+    // Three accepted shapes, all backward-compatible:
+    //   1. neither table nor tables → every table in the database
+    //   2. table: "users"           → one specific table (legacy)
+    //   3. tables: ["a", "b"]       → filtered subset
+    // If a caller passes both, merge them — Set dedups exact-match
+    // overlaps so we don't issue `IN ('users', 'users')`. Order of
+    // results is by DATA_LENGTH DESC from the query, not caller order.
+    const filterSet = new Set<string>();
+    if (table) filterSet.add(table);
+    if (tablesArg) for (const t of tablesArg) filterSet.add(t);
+    const filter = filterSet.size > 0 ? [...filterSet] : undefined;
+
+    const rows = await getTableStats(connection, r.db, filter);
+    if (rows.length === 0) {
+      // Tell the caller what was asked when nothing comes back, so
+      // "I asked for these specific tables and got zero" is a clear
+      // signal vs "the database has no tables at all".
+      if (filter) {
+        return toolError(`None of the requested tables exist in ${r.db}.`, {
+          code: "TABLES_NOT_FOUND",
+          hint: "Verify the table names against the database.",
+          suggestions: [
+            {
+              tool: "list_tables",
+              reason: "see every table in this database",
+              args: { connection, database: r.db },
+            },
+          ],
+        });
+      }
       return toolOk("No tables found", { database: r.db, tables: [] });
     }
 
-    const formatted = tables.map((t) => ({
+    const formatted = rows.map((t) => ({
       TABLE_NAME: t.TABLE_NAME,
       ROWS: t.TABLE_ROWS,
       DATA_SIZE: humanSize(t.DATA_LENGTH),
@@ -44,8 +74,8 @@ export const handleGetTableStats = toolHandler(
     }));
 
     return toolOk(
-      formatAsTable(formatted) + `\n\n${tables.length} table(s) in ${r.db}`,
-      { database: r.db, tables },
+      formatAsTable(formatted) + `\n\n${rows.length} table(s) in ${r.db}`,
+      { database: r.db, tables: rows },
     );
   },
 );
@@ -365,12 +395,13 @@ export function registerDataTools(server: McpServer) {
   server.registerTool(
     "get_table_stats",
     {
-      title: "Table statistics (one or all tables)",
+      title: "Table statistics (one, some, or all tables)",
       description:
         "Show table statistics: row counts, data size, index size, auto_increment, " +
-        "and create/update timestamps. Pass `table` for a single table; omit it to " +
-        "get every table in the database in one shot (useful for 'which tables are " +
-        "huge?' or 'when was each table last written?').",
+        "and create/update timestamps. Three modes, all backward-compatible:\n" +
+        "  • Pass `table` for a single table.\n" +
+        "  • Pass `tables` (an array) to filter to a specific subset — one round-trip for many tables.\n" +
+        "  • Omit both to get every table in the database (the 'which tables are huge?' mode).",
       inputSchema: {
         connection: z.string().describe("Connection name"),
         database: z.string().optional().describe("Database name"),
@@ -378,7 +409,14 @@ export function registerDataTools(server: McpServer) {
           .string()
           .optional()
           .describe(
-            "Specific table to inspect. Omit to return stats for every table in the database.",
+            "Single table to inspect. Omit if using `tables`, or to get every table.",
+          ),
+        tables: z
+          .array(z.string())
+          .optional()
+          .describe(
+            "Filter to a specific list of tables. Each name returns one row in the result. " +
+              "Omit (or use `table`) for the single-or-all modes.",
           ),
       },
       annotations: READ_ONLY_TOOL_ANNOTATIONS,

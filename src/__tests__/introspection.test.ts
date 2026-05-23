@@ -74,17 +74,14 @@ describe("listTableNames", () => {
 
 describe("listTablesDetailed", () => {
   it("returns typed TableListRow rows", async () => {
-    const runner = new MockRunner().whenSql(
-      /information_schema\.TABLES/s,
-      [
-        {
-          TABLE_NAME: "users",
-          TABLE_ROWS: 100,
-          ENGINE: "InnoDB",
-          TABLE_COMMENT: "",
-        },
-      ],
-    );
+    const runner = new MockRunner().whenSql(/information_schema\.TABLES/s, [
+      {
+        TABLE_NAME: "users",
+        TABLE_ROWS: 100,
+        ENGINE: "InnoDB",
+        TABLE_COMMENT: "",
+      },
+    ]);
     registerMockConnection(CONN, runner);
     const rows = await listTablesDetailed(CONN, "shop");
     expect(rows[0]?.TABLE_NAME).toBe("users");
@@ -93,22 +90,31 @@ describe("listTablesDetailed", () => {
 });
 
 describe("getTableStats", () => {
-  it("omits the AND TABLE_NAME clause when table is undefined", async () => {
+  it("omits the AND TABLE_NAME clause when no filter is given", async () => {
     const runner = new MockRunner().whenSql(/information_schema\.TABLES/s, []);
     registerMockConnection(CONN, runner);
     await getTableStats(CONN, "shop");
     const call = runner.calls()[0];
-    expect(call?.sql).not.toContain("TABLE_NAME = ?");
+    expect(call?.sql).not.toContain("TABLE_NAME IN");
     expect(call?.params).toEqual(["shop"]);
   });
 
-  it("adds TABLE_NAME = ? when table is provided", async () => {
+  it("adds TABLE_NAME IN (?) for a single-table filter", async () => {
     const runner = new MockRunner().whenSql(/information_schema\.TABLES/s, []);
     registerMockConnection(CONN, runner);
-    await getTableStats(CONN, "shop", "users");
+    await getTableStats(CONN, "shop", ["users"]);
     const call = runner.calls()[0];
-    expect(call?.sql).toContain("TABLE_NAME = ?");
+    expect(call?.sql).toContain("TABLE_NAME IN (?)");
     expect(call?.params).toEqual(["shop", "users"]);
+  });
+
+  it("emits one ? per table for a multi-table filter", async () => {
+    const runner = new MockRunner().whenSql(/information_schema\.TABLES/s, []);
+    registerMockConnection(CONN, runner);
+    await getTableStats(CONN, "shop", ["users", "orders", "events"]);
+    const call = runner.calls()[0];
+    expect(call?.sql).toContain("TABLE_NAME IN (?, ?, ?)");
+    expect(call?.params).toEqual(["shop", "users", "orders", "events"]);
   });
 });
 
@@ -133,9 +139,7 @@ describe("getCreateTable", () => {
     const runner = new MockRunner().whenSql(/^SHOW CREATE TABLE/i, []);
     registerMockConnection(CONN, runner);
     await getCreateTable(CONN, "my-db", "tab`le");
-    expect(runner.calls()[0]?.sql).toBe(
-      "SHOW CREATE TABLE `my-db`.`tab``le`",
-    );
+    expect(runner.calls()[0]?.sql).toBe("SHOW CREATE TABLE `my-db`.`tab``le`");
   });
 });
 
@@ -210,20 +214,17 @@ describe("getForeignKeys", () => {
 
 describe("getIndexStats", () => {
   it("returns rows + scopes by db (and optionally table)", async () => {
-    const runner = new MockRunner().whenSql(
-      /information_schema\.STATISTICS/s,
-      [
-        {
-          TABLE_NAME: "users",
-          INDEX_NAME: "PRIMARY",
-          NON_UNIQUE: 0,
-          SEQ_IN_INDEX: 1,
-          COLUMN_NAME: "id",
-          CARDINALITY: 100,
-          INDEX_TYPE: "BTREE",
-        },
-      ],
-    );
+    const runner = new MockRunner().whenSql(/information_schema\.STATISTICS/s, [
+      {
+        TABLE_NAME: "users",
+        INDEX_NAME: "PRIMARY",
+        NON_UNIQUE: 0,
+        SEQ_IN_INDEX: 1,
+        COLUMN_NAME: "id",
+        CARDINALITY: 100,
+        INDEX_TYPE: "BTREE",
+      },
+    ]);
     registerMockConnection(CONN, runner);
     const rows = await getIndexStats(CONN, "shop", "users");
     expect(rows).toHaveLength(1);
@@ -281,10 +282,9 @@ describe("routines: list / find / ddl", () => {
   });
 
   it("findRoutineType returns the type or null", async () => {
-    const runner = new MockRunner().whenSql(
-      /information_schema\.ROUTINES/s,
-      [{ ROUTINE_TYPE: "FUNCTION" }],
-    );
+    const runner = new MockRunner().whenSql(/information_schema\.ROUTINES/s, [
+      { ROUTINE_TYPE: "FUNCTION" },
+    ]);
     registerMockConnection(CONN, runner);
     expect(await findRoutineType(CONN, "shop", "f1")).toBe("FUNCTION");
   });
@@ -344,10 +344,7 @@ describe("triggers: list + ddl", () => {
 
 describe("events: list + ddl", () => {
   it("lists events scoped to db", async () => {
-    const runner = new MockRunner().whenSql(
-      /information_schema\.EVENTS/s,
-      [],
-    );
+    const runner = new MockRunner().whenSql(/information_schema\.EVENTS/s, []);
     registerMockConnection(CONN, runner);
     await listEventsBrief(CONN, "shop");
     expect(runner.calls()[0]?.params).toEqual(["shop"]);
@@ -363,9 +360,7 @@ describe("events: list + ddl", () => {
       },
     ]);
     registerMockConnection(CONN, runner);
-    expect(await getEventDdl(CONN, "shop", "e1")).toBe(
-      "CREATE EVENT e1 (...)",
-    );
+    expect(await getEventDdl(CONN, "shop", "e1")).toBe("CREATE EVENT e1 (...)");
   });
 });
 
@@ -407,10 +402,9 @@ describe("admin: processes + unused indexes + charset", () => {
   });
 
   it("getCharsetCollation skips table+column queries when table is undefined", async () => {
-    const runner = new MockRunner().whenSql(
-      /information_schema\.SCHEMATA/s,
-      [{ SCHEMA_NAME: "shop", charset: "utf8mb4", collation: "utf8mb4_bin" }],
-    );
+    const runner = new MockRunner().whenSql(/information_schema\.SCHEMATA/s, [
+      { SCHEMA_NAME: "shop", charset: "utf8mb4", collation: "utf8mb4_bin" },
+    ]);
     registerMockConnection(CONN, runner);
     const info = await getCharsetCollation(CONN, "shop");
     expect(info.databaseInfo).toHaveLength(1);
