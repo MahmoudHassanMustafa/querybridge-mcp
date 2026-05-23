@@ -750,7 +750,13 @@ describe("diagnostics pack — end-to-end against MySQL", () => {
     expect(typeof sc.version).toBe("string");
     expect(sc.version as string).toMatch(/^8\./); // mysql:8.4 container
     expect(typeof sc.uptime_seconds).toBe("number");
-    expect(sc.uptime_seconds as number).toBeGreaterThan(0);
+    // MySQL's `Uptime` status counter is integer-second granularity.
+    // On a freshly-started container the value can legitimately be 0
+    // for the first ~1s before the counter ticks over — caught the
+    // Node 22 CI matrix on 2026-05-23. Assert non-negative integer
+    // instead of strict-positive; the point is "uptime is a real
+    // number from the server", not "the server has been up ≥ 1s".
+    expect(sc.uptime_seconds as number).toBeGreaterThanOrEqual(0);
     expect(typeof sc.threads_connected).toBe("number");
     expect(sc.character_set_server).toBe("utf8mb4");
   });
