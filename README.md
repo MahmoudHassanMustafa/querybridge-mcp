@@ -462,17 +462,17 @@ Or with custom certificates:
 
 ### Schema introspection
 
-| Tool               | Description                                          |
-| ------------------ | ---------------------------------------------------- |
-| `list_tables`      | List tables with row counts and engine info          |
-| `list_views`       | List views with definer, security type, updatability |
-| `describe_table`   | Show columns, indexes, and CREATE TABLE statement    |
-| `describe_view`    | Show columns and CREATE VIEW DDL of a view           |
-| `get_ddl`          | Get clean CREATE TABLE DDL                           |
-| `get_view_ddl`     | Get clean CREATE VIEW DDL (raw, not truncated)       |
-| `get_foreign_keys` | Show FK relationships with cascade rules             |
-| `get_indexes`      | Show all indexes with duplicate detection            |
-| `search_columns`   | Find columns by name pattern across all tables       |
+| Tool               | Description                                                                                                                                    |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list_tables`      | List tables with row counts and engine info                                                                                                    |
+| `list_views`       | List views with definer, security type, updatability                                                                                           |
+| `describe_table`   | Show columns, indexes, and CREATE TABLE statement. Pass `table` for one table; pass `tables: [...]` for a batch (returns `{ results: [...] }`) |
+| `describe_view`    | Show columns and CREATE VIEW DDL of a view                                                                                                     |
+| `get_ddl`          | Get clean CREATE TABLE DDL. `table` for one, `tables: [...]` for a batch                                                                       |
+| `get_view_ddl`     | Get clean CREATE VIEW DDL (raw, not truncated)                                                                                                 |
+| `get_foreign_keys` | Show FK relationships with cascade rules. `table` / `tables: [...]` / omit both for one / some / all                                           |
+| `get_indexes`      | Show indexes with duplicate detection. `table` / `tables: [...]` / omit both for one / some / all                                              |
+| `search_columns`   | Find columns by name pattern across all tables                                                                                                 |
 
 ### Query execution
 

@@ -41,11 +41,27 @@ export function registerSchemaTools(server: McpServer) {
   server.registerTool(
     "describe_table",
     {
-      title: "Describe table",
-      description: "Show the schema of a table: columns, types, keys, indexes",
+      title: "Describe table (one or many)",
+      description:
+        "Show the schema of a table: columns, types, keys, indexes, and CREATE statement. " +
+        "Two modes:\n" +
+        '  • `table: "users"` → flat single-table response (legacy shape).\n' +
+        '  • `tables: ["a", "b"]` → multi-table batch in one call, returns `{ results: [...] }`.\n' +
+        "Mixing both forms merges and deduplicates.",
       inputSchema: {
         connection: z.string().describe("Connection name"),
-        table: z.string().describe("Table name"),
+        table: z
+          .string()
+          .optional()
+          .describe(
+            "Single table — keeps the legacy flat response shape. Either `table` or `tables` is required.",
+          ),
+        tables: z
+          .array(z.string())
+          .optional()
+          .describe(
+            "Batch describe: each name returns one entry in `results`. Use this when you want schemas of several tables in one call.",
+          ),
         database: z.string().optional().describe("Database name"),
       },
       annotations: READ_ONLY_TOOL_ANNOTATIONS,
@@ -56,11 +72,26 @@ export function registerSchemaTools(server: McpServer) {
   server.registerTool(
     "get_ddl",
     {
-      title: "Get table DDL",
-      description: "Get the CREATE TABLE DDL statement for a table",
+      title: "Get table DDL (one or many)",
+      description:
+        "Get `CREATE TABLE` DDL statements. Two modes:\n" +
+        '  • `table: "users"` → flat single-table response (legacy).\n' +
+        '  • `tables: ["a", "b"]` → batch, returns `{ results: [{table, ddl}, ...] }`.\n' +
+        "Mixing both forms merges and deduplicates.",
       inputSchema: {
         connection: z.string().describe("Connection name"),
-        table: z.string().describe("Table name"),
+        table: z
+          .string()
+          .optional()
+          .describe(
+            "Single table — keeps the legacy flat response shape. Either `table` or `tables` is required.",
+          ),
+        tables: z
+          .array(z.string())
+          .optional()
+          .describe(
+            "Batch DDL fetch: each name returns one entry in `results`. Use this for schema-dump-style operations.",
+          ),
         database: z.string().optional().describe("Database name"),
       },
       annotations: READ_ONLY_TOOL_ANNOTATIONS,
@@ -71,15 +102,26 @@ export function registerSchemaTools(server: McpServer) {
   server.registerTool(
     "get_foreign_keys",
     {
-      title: "Get foreign keys",
+      title: "Get foreign keys (one, some, or all tables)",
       description:
-        "Show foreign key relationships for a table or entire database",
+        "Show foreign-key relationships. Three modes: `table` for one table, " +
+        "`tables: [...]` for a subset in one call, or omit both for every FK " +
+        "in the database. Response shape is the same in all modes (FKs are " +
+        "already mixed across tables in the all-mode response).",
       inputSchema: {
         connection: z.string().describe("Connection name"),
         table: z
           .string()
           .optional()
-          .describe("Table name (omit for all FKs in database)"),
+          .describe(
+            "Single table to filter to. Omit if using `tables` or to get every FK in the database.",
+          ),
+        tables: z
+          .array(z.string())
+          .optional()
+          .describe(
+            "Filter to FKs whose source is in this list of tables. Omit (or use `table`) for the single-or-all modes.",
+          ),
         database: z.string().optional().describe("Database name"),
       },
       annotations: READ_ONLY_TOOL_ANNOTATIONS,
@@ -90,15 +132,26 @@ export function registerSchemaTools(server: McpServer) {
   server.registerTool(
     "get_indexes",
     {
-      title: "Get indexes",
+      title: "Get indexes (one, some, or all tables)",
       description:
-        "Show indexes for a table or entire database, with duplicate detection",
+        "Show indexes for one, some, or all tables in the database, with " +
+        "duplicate detection (overlapping leading-column indexes flagged). " +
+        "Three modes: `table` for one, `tables: [...]` for a subset, or omit " +
+        "both for every index in the database.",
       inputSchema: {
         connection: z.string().describe("Connection name"),
         table: z
           .string()
           .optional()
-          .describe("Table name (omit for all indexes in database)"),
+          .describe(
+            "Single table to filter to. Omit if using `tables` or to get every index in the database.",
+          ),
+        tables: z
+          .array(z.string())
+          .optional()
+          .describe(
+            "Filter to indexes on this list of tables. Omit (or use `table`) for the single-or-all modes.",
+          ),
         database: z.string().optional().describe("Database name"),
       },
       annotations: READ_ONLY_TOOL_ANNOTATIONS,
