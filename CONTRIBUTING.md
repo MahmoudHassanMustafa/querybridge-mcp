@@ -63,30 +63,38 @@ it up automatically). See SECURITY.md for the security model.
 
 ## What to add changesets for
 
-| Change | Changeset? | Bump |
-|--------|------------|------|
-| New tool, prompt, or resource | Yes | minor |
-| New config field | Yes | minor |
-| Breaking config / tool-arg change | Yes | major |
-| Bug fix | Yes | patch |
-| Security fix | Yes | patch (and credit reporter) |
-| Refactor with no user-visible change | No | — |
-| Docs, README, comments | No | — |
-| CI / lint / Dependabot | No | — |
+| Change                               | Changeset? | Bump                        |
+| ------------------------------------ | ---------- | --------------------------- |
+| New tool, prompt, or resource        | Yes        | minor                       |
+| New config field                     | Yes        | minor                       |
+| Breaking config / tool-arg change    | Yes        | major                       |
+| Bug fix                              | Yes        | patch                       |
+| Security fix                         | Yes        | patch (and credit reporter) |
+| Refactor with no user-visible change | No         | —                           |
+| Docs, README, comments               | No         | —                           |
+| CI / lint / Dependabot               | No         | —                           |
 
 ## Tests
 
 Two suites:
 
 - **Unit** (`src/__tests__/*.test.ts`) — fast, no external dependencies.
-  Covers config parsing, SQL whitelist, helpers, host-key verification,
-  log forwarding. `pnpm test` runs these.
+  Covers config parsing, SQL whitelist + identifier escape (`src/sql/*`,
+  tested in `helpers.test.ts` / `sql-template.test.ts` / `sql-split.test.ts`),
+  host-key verification, log forwarding, tool-error suggestions, every
+  schema/data/streaming/diagnostics/traverse tool family. `pnpm test`
+  runs these.
 
 - **Integration** (`src/__tests__/integration/*.integration.test.ts`) —
   spins up a real MySQL container via Testcontainers. Verifies the
   behaviors unit tests cannot reach: read-only session enforcement,
   LOAD DATA LOCAL INFILE block, KILL QUERY cancellation,
-  information_schema queries. Requires Docker. `pnpm test:integration`.
+  information_schema queries, and tool families that touch a live pool
+  (streaming, diagnostics, `traverse_fk`, `generate_migration`).
+  Requires Docker. `pnpm test:integration`. **Every new tool ships with
+  at least one integration test** — `MockRunner` doesn't reach
+  `getPool()`, so any tool that touches a connection directly only gets
+  real coverage here.
 
 `pnpm test:all` runs both. CI runs both on Node 22 (integration only
 runs once — the SDK behavior is identical across Node 20/22/24).
@@ -100,9 +108,9 @@ to npm with Sigstore provenance.
 
 ### Required repository secrets
 
-| Secret | Used by | Purpose |
-|---|---|---|
-| `NPM_TOKEN` | `release.yml` | npm automation token (Automation type, scoped to `querybridge-mcp`, `Read and write`). |
+| Secret           | Used by         | Purpose                                                                                                                                                                                                                                                                                           |
+| ---------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `NPM_TOKEN`      | `release.yml`   | npm automation token (Automation type, scoped to `querybridge-mcp`, `Read and write`).                                                                                                                                                                                                            |
 | `CHANGESETS_PAT` | `changeset.yml` | Fine-grained PAT with **Contents: read/write** and **Pull requests: read/write** on this repo. Required so tags pushed by Changesets fire `release.yml`. Without it the workflow falls back to `GITHUB_TOKEN`, which works for the PR but cannot trigger downstream workflows (GitHub anti-loop). |
 
 To create `CHANGESETS_PAT`: Settings → Developer settings → Personal

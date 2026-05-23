@@ -4,7 +4,7 @@ Operational notes for agents working in this repo. **Read `CONVENTIONS.md` for t
 
 ## Quick orientation
 
-- **What it is.** An MCP server connecting Claude (and other MCP clients) to MySQL. Ships two transports: **stdio** (default) and **Streamable HTTP** (with bearer auth). ~30 tools.
+- **What it is.** An MCP server connecting Claude (and other MCP clients) to MySQL. Ships two transports: **stdio** (default) and **Streamable HTTP** (with bearer auth). 39 tools across 9 families (see `README.md` → Tools).
 - **Stack.** TypeScript, Node ≥ 20, **pnpm** (not npm — `packageManager` field in `package.json`), Vitest, `mysql2/promise`, `ssh2`, `@modelcontextprotocol/sdk`.
 - **Architecture.** `Transport → Tools → Infrastructure`. Enforced by `.dependency-cruiser.cjs`; `CONVENTIONS.md` §1 has the prose. Don't import upward.
 - **Entry points.** `src/server/index.ts` dispatches stdio vs HTTP. `src/tools/index.ts` is the tool-registry barrel.
@@ -48,6 +48,8 @@ Changesets-driven. **Never bump versions manually.**
 - **`MockRunner` only matches `.query()` calls.** Any tool that reaches `getPool()` (e.g. `streaming_query`, `execute_query`'s KILL path) cannot be unit-tested with mocks — those paths live in the integration suite.
 - **Logging.** Use `log(level, msg, ctx?)` from `src/log.ts`. The local ESLint plugin forbids `${var}` interpolation in messages — variables go in the third-arg context object so operators can grep on stable JSON fields.
 - **Error responses.** Anticipated failures: `return toolError(msg, { code, hint, suggestions? })`. Typed failures: `throw` a `QueryBridgeError` subclass — `toolHandler` converts it and forwards the `code` + `suggestions`. System errors (mysql2 throws, dropped connections): just `throw` — `toolHandler` sanitizes the message.
+- **`tables: string[]` dual-shape.** Several schema tools (`describe_table`, `get_ddl`, `get_foreign_keys`, `get_indexes`, `get_table_stats`) accept either `table: string` (flat shape) or `tables: string[]` (returns `{ results: [...] }`). When adding a new schema-introspection tool that benefits from batch lookup, mirror this pattern — single-table mode keeps the existing flat response for back-compat; batch mode wraps each per-table payload in a `results` array. Dedup `tables`/`table` via `Set` before fanning out.
+- **SQL template lint rule** (`local/sql-template-no-bare-identifier`). Bare-identifier interpolation in a `sql`-tagged template — passing a variable directly into the template, e.g. `${table}` — is flagged as an injection foot-gun. The rule whitelists `CallExpression` children (e.g. `escapeId(table)`), so the fix is to wrap the identifier in a call rather than passing the bare variable. If the keyword itself is dynamic (e.g. `GLOBAL` / `SESSION`), drop the `sql` tag and use plain string concatenation — the rule only fires on tagged templates whose first token is a SQL keyword.
 
 ## Where things live
 
