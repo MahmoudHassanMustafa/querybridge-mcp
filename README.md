@@ -6,7 +6,7 @@ A Model Context Protocol (MCP) server that connects Claude Code to MySQL databas
 
 ## Features
 
-- **28 tools** for schema introspection, querying, ERD generation, programmability, operator admin, and cross-database diffing
+- **39 tools** — schema introspection, querying, ERD generation, programmability, operator admin, per-column profiling, FK navigation, diagnostics (server snapshot, locks, slow queries), cross-database diffing, and advisory migration SQL
 - **2 MCP resources** for browsable schema access
 - **4 MCP prompts** for guided database workflows
 - **Two transports** — local stdio (Claude Code) and remote Streamable HTTP with bearer auth (Cursor, n8n, hosted agents)
