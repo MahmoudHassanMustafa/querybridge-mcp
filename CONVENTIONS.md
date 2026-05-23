@@ -46,10 +46,12 @@ Rules:
   knowledge of a specific tool belongs in that tool, not in infrastructure.
 - **`tools/index.ts` is a barrel only.** It exists to register all tool
   families with a single call. No logic.
-- **One tool family per file.** `connection-tools`, `query-tools`,
-  `schema-tools`, `data-tools`, `routines-tools`, `admin-tools`,
-  `compare-tools`, `erd-tool`. A file may register multiple tools, but
-  every tool in a file must share the same theme.
+- **One tool family per file.** Current families: `connection-tools`,
+  `query-tools`, `streaming-tools`, `schema/` (multi-file), `data-tools`,
+  `traverse-tools`, `routines/`, `admin-tools`, `diagnostics-tools`,
+  `erd-tool`, `compare/` (multi-file pipeline), `migration-tools`. A file
+  may register multiple tools, but every tool in a file must share the
+  same theme.
 - **Cohesion test, not a line cap.** A file should be summarizable in
   one sentence about what it does. `helpers.ts` (491 LOC, 9 unrelated
   jobs) fails this; `compare-tools.ts` (1311 LOC, all one pipeline)
@@ -67,12 +69,16 @@ Every MCP tool in this server **must** follow this shape, no exceptions:
 
 ```ts
 server.registerTool(
-  "tool_name",                                  // snake_case, matches the LLM-facing name
+  "tool_name", // snake_case, matches the LLM-facing name
   {
-    title: "Human-readable title",              // shown in tool pickers
+    title: "Human-readable title", // shown in tool pickers
     description: "What it does and when to use it.",
-    inputSchema: { /* zod schemas */ },
-    annotations: { /* hints — see below */ },
+    inputSchema: {
+      /* zod schemas */
+    },
+    annotations: {
+      /* hints — see below */
+    },
   },
   toolHandler("tool_name", async (args, extra) => {
     // 1. Validate / resolve preconditions
@@ -111,12 +117,12 @@ Never construct `{ content: [...] }` manually in a tool.
 
 Every tool must specify all four annotation hints explicitly:
 
-| Annotation | Set to `true` when |
-|------------|--------------------|
-| `readOnlyHint` | Tool only reads — no mutation of DB or server state |
-| `destructiveHint` | Tool can lose data when misused |
-| `idempotentHint` | Same args → same effect, repeatable safely |
-| `openWorldHint` | Tool issues a query against an external DB. `false` for tools that only inspect server-local state (e.g. `list_connections`). |
+| Annotation        | Set to `true` when                                                                                                            |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `readOnlyHint`    | Tool only reads — no mutation of DB or server state                                                                           |
+| `destructiveHint` | Tool can lose data when misused                                                                                               |
+| `idempotentHint`  | Same args → same effect, repeatable safely                                                                                    |
+| `openWorldHint`   | Tool issues a query against an external DB. `false` for tools that only inspect server-local state (e.g. `list_connections`). |
 
 For read-only introspection tools, prefer the shared constant pattern:
 
@@ -175,7 +181,7 @@ creation. The boundary is:
 - **Read once at startup:** `loadConfig()` → `initConnection(cfg)` per
   database → pool is registered in the module-private `connections` map.
 - **Use during tools:** `getPool(name)`, `queryWithTimeout(name, sql,
-  params)`, `getConnectionConfig(name)`, `getQueryTimeout(name)`.
+params)`, `getConnectionConfig(name)`, `getQueryTimeout(name)`.
 - **Tear down on shutdown:** `closeAll()` — pools first, then SSH
   tunnels.
 
@@ -345,7 +351,7 @@ These rules are not negotiable. Code that violates them does not merge.
 ## 9. Mechanical enforcement
 
 The §1 layering, the §2 tool contract, and the §6 security invariants
-that *can* be checked statically are now enforced by tooling:
+that _can_ be checked statically are now enforced by tooling:
 
 - **ESLint `no-console`** — global error, with file-level overrides only
   for `src/log.ts` (the logger itself) and `src/server/cli.ts` (operator
@@ -374,14 +380,14 @@ that *can* be checked statically are now enforced by tooling:
     unknown — `eslint-disable` with a justification.
   - `local/log-message-no-interpolation` — flags `log("warn", \`failed
     for ${name}\`)`. Variables go in the third-arg context object so
-    they appear as separate JSON fields next to `traceId` / `toolName`
+they appear as separate JSON fields next to `traceId`/`toolName`
     (§5.1).
 
 Everything in CONVENTIONS.md that can be checked statically is now
 checked statically. Things still left to taste / review:
 
 - Naming (a tool called `nuke_database` would pass every rule above).
-- Per-tool annotation accuracy (does this tool *really* belong with
+- Per-tool annotation accuracy (does this tool _really_ belong with
   `readOnlyHint: true`?).
 - Integration-test happy-path coverage (§8) — easy to skip in a hurry.
 
