@@ -46,62 +46,176 @@ export const handleListTables = toolHandler(
   },
 );
 
+/**
+ * Pull columns + create-statement + indexes for one table.
+ * Returns `null` when the target is actually a view (caller can
+ * branch to the right error path).
+ */
+async function describeOneTable(
+  connection: string,
+  db: string,
+  table: string,
+): Promise<{
+  table: string;
+  columns: Awaited<ReturnType<typeof describeTableColumns>>;
+  indexes: Awaited<ReturnType<typeof showIndexes>>;
+  createStatement: string;
+  isView: boolean;
+}> {
+  // Stage 1: columns + create-row in parallel. We need the create
+  // row to know whether the target is actually a view — if it is,
+  // skip the SHOW INDEX call entirely (it returns nothing for views
+  // anyway and the extra query just wastes a round-trip).
+  const [columns, createRow] = await Promise.all([
+    describeTableColumns(connection, db, table),
+    getCreateTableRaw(connection, db, table),
+  ]);
+  const isView =
+    !!createRow && !createRow["Create Table"] && !!createRow["Create View"];
+  const indexes = isView ? [] : await showIndexes(connection, db, table);
+  return {
+    table,
+    columns,
+    indexes,
+    createStatement: createRow?.["Create Table"] ?? "",
+    isView,
+  };
+}
+
 export const handleDescribeTable = toolHandler(
   "describe_table",
   async ({
     connection,
     table,
+    tables: tablesArg,
     database,
   }: {
     connection: string;
-    table: string;
+    table?: string | undefined;
+    tables?: string[] | undefined;
     database?: string | undefined;
   }) => {
     const r = resolveDb(connection, database);
     if ("error" in r) return r.error;
 
-    const columns = await describeTableColumns(connection, r.db, table);
-    const createRow = await getCreateTableRaw(connection, r.db, table);
-    if (createRow && !createRow["Create Table"] && createRow["Create View"]) {
-      return toolError(`"${table}" is a view, not a table.`, {
-        code: "OBJECT_IS_VIEW",
-        hint: "Use describe_view or get_view_ddl instead.",
+    // Three accepted shapes:
+    //   1. table: "users"            → flat single-table response (legacy)
+    //   2. tables: ["a", "b"]        → array response { results: [...] }
+    //   3. table: "x", tables: [...] → merged + deduplicated, array response
+    // Choose the response shape based on whether `tables` was provided:
+    // legacy callers passing just `table` keep the original flat shape;
+    // anything that opts into `tables` (even a one-element array) gets
+    // the new array shape. That's the cleanest backward-compat split.
+    const useArrayShape = !!tablesArg && tablesArg.length > 0;
+    const filterSet = new Set<string>();
+    if (table) filterSet.add(table);
+    if (tablesArg) for (const t of tablesArg) filterSet.add(t);
+    const targets = [...filterSet];
+
+    if (targets.length === 0) {
+      return toolError("describe_table needs either `table` or `tables`.", {
+        code: "DESCRIBE_TABLE_NO_TARGET",
+        hint: 'Pass `table: "<name>"` for one table or `tables: [...]` for a batch.',
         suggestions: [
           {
-            tool: "describe_view",
-            reason: "introspect the view's columns and underlying SELECT",
-            args: { connection, database: r.db, view: table },
-          },
-          {
-            tool: "get_view_ddl",
-            reason: "get the CREATE VIEW DDL for this view",
-            args: { connection, database: r.db, view: table },
+            tool: "list_tables",
+            reason: "see what's available to describe",
+            args: { connection, database: r.db },
           },
         ],
       });
     }
-    const createStatement = createRow?.["Create Table"] ?? "";
-    const indexes = await showIndexes(connection, r.db, table);
 
-    const output = [
-      "## Columns",
-      formatAsTable(columns),
-      "",
-      "## Indexes",
-      formatAsTable(indexes),
-      "",
-      "## Create Statement",
-      "```sql",
-      createStatement,
-      "```",
-    ].join("\n");
+    // Fetch every requested table in parallel. Each describeOneTable
+    // runs three queries; mysql2's pool handles the concurrency.
+    const results = await Promise.all(
+      targets.map((t) => describeOneTable(connection, r.db, t)),
+    );
 
-    return toolOk(output, {
+    // ── single-table flat shape (legacy callers) ───────────────────
+    if (!useArrayShape) {
+      // targets is non-empty (guarded above), so Promise.all gave us
+      // at least one entry. The explicit narrowing keeps TS happy
+      // without a non-null assertion.
+      const only = results[0];
+      if (!only) {
+        return toolError("describe_table internal error: no result", {
+          code: "INTERNAL_NO_RESULT",
+        });
+      }
+      if (only.isView) {
+        return toolError(`"${only.table}" is a view, not a table.`, {
+          code: "OBJECT_IS_VIEW",
+          hint: "Use describe_view or get_view_ddl instead.",
+          suggestions: [
+            {
+              tool: "describe_view",
+              reason: "introspect the view's columns and underlying SELECT",
+              args: { connection, database: r.db, view: only.table },
+            },
+            {
+              tool: "get_view_ddl",
+              reason: "get the CREATE VIEW DDL for this view",
+              args: { connection, database: r.db, view: only.table },
+            },
+          ],
+        });
+      }
+      const output = [
+        "## Columns",
+        formatAsTable(only.columns),
+        "",
+        "## Indexes",
+        formatAsTable(only.indexes),
+        "",
+        "## Create Statement",
+        "```sql",
+        only.createStatement,
+        "```",
+      ].join("\n");
+      return toolOk(output, {
+        database: r.db,
+        table: only.table,
+        columns: only.columns,
+        indexes: only.indexes,
+        createStatement: only.createStatement,
+      });
+    }
+
+    // ── multi-table array shape (new) ──────────────────────────────
+    // Views in the set get a `isView: true` marker + an empty createStatement,
+    // so the caller can detect mixed-input mistakes (asked for 3 tables, got
+    // 2 tables + 1 view) without us failing the whole call.
+    const sections: string[] = [];
+    for (const res of results) {
+      const header = res.isView
+        ? `## \`${res.table}\` _(VIEW — use describe_view for the underlying SELECT)_`
+        : `## \`${res.table}\``;
+      sections.push(header);
+      sections.push("");
+      sections.push("### Columns");
+      sections.push(formatAsTable(res.columns));
+      if (!res.isView) {
+        sections.push("");
+        sections.push("### Indexes");
+        sections.push(formatAsTable(res.indexes));
+        sections.push("");
+        sections.push("### Create Statement");
+        sections.push("```sql");
+        sections.push(res.createStatement);
+        sections.push("```");
+      }
+      sections.push("");
+    }
+    return toolOk(sections.join("\n"), {
       database: r.db,
-      table,
-      columns,
-      indexes,
-      createStatement,
+      results: results.map((res) => ({
+        table: res.table,
+        isView: res.isView,
+        columns: res.columns,
+        indexes: res.isView ? [] : res.indexes,
+        createStatement: res.createStatement,
+      })),
     });
   },
 );
@@ -111,17 +225,73 @@ export const handleGetDdl = toolHandler(
   async ({
     connection,
     table,
+    tables: tablesArg,
     database,
   }: {
     connection: string;
-    table: string;
+    table?: string | undefined;
+    tables?: string[] | undefined;
     database?: string | undefined;
   }) => {
     const r = resolveDb(connection, database);
     if ("error" in r) return r.error;
 
-    const ddl = await getCreateTable(connection, r.db, table);
-    return toolOk(ddl, { database: r.db, table, ddl });
+    // Same dual-shape split as describe_table: legacy `table` keeps
+    // the flat response, new `tables` returns an array.
+    const useArrayShape = !!tablesArg && tablesArg.length > 0;
+    const filterSet = new Set<string>();
+    if (table) filterSet.add(table);
+    if (tablesArg) for (const t of tablesArg) filterSet.add(t);
+    const targets = [...filterSet];
+
+    if (targets.length === 0) {
+      return toolError("get_ddl needs either `table` or `tables`.", {
+        code: "GET_DDL_NO_TARGET",
+        hint: 'Pass `table: "<name>"` for one or `tables: [...]` for a batch.',
+        suggestions: [
+          {
+            tool: "list_tables",
+            reason: "see what's available",
+            args: { connection, database: r.db },
+          },
+        ],
+      });
+    }
+
+    const ddls = await Promise.all(
+      targets.map(async (t) => ({
+        table: t,
+        ddl: await getCreateTable(connection, r.db, t),
+      })),
+    );
+
+    if (!useArrayShape) {
+      const only = ddls[0];
+      if (!only) {
+        return toolError("get_ddl internal error: no result", {
+          code: "INTERNAL_NO_RESULT",
+        });
+      }
+      return toolOk(only.ddl, {
+        database: r.db,
+        table: only.table,
+        ddl: only.ddl,
+      });
+    }
+
+    // Concatenate with delimiters so the human-readable output stays
+    // greppable per-table. The structured response keeps them
+    // separate.
+    const text = ddls
+      .map(
+        (d) =>
+          `-- ── ${d.table} ──\n${d.ddl || "-- (no DDL — table missing or is a view)"}`,
+      )
+      .join("\n\n");
+    return toolOk(text, {
+      database: r.db,
+      results: ddls,
+    });
   },
 );
 
@@ -130,21 +300,43 @@ export const handleGetForeignKeys = toolHandler(
   async ({
     connection,
     table,
+    tables: tablesArg,
     database,
   }: {
     connection: string;
     table?: string | undefined;
+    tables?: string[] | undefined;
     database?: string | undefined;
   }) => {
     const r = resolveDb(connection, database);
     if ("error" in r) return r.error;
 
-    const fks = await getForeignKeys(connection, r.db, table);
+    // Merge `table` and `tables` into a deduplicated filter — same
+    // pattern as get_table_stats. Empty filter → every FK in the
+    // database (the long-standing default).
+    const filterSet = new Set<string>();
+    if (table) filterSet.add(table);
+    if (tablesArg) for (const t of tablesArg) filterSet.add(t);
+    const filter = filterSet.size > 0 ? [...filterSet] : undefined;
+
+    const fks = await getForeignKeys(connection, r.db, filter);
 
     if (fks.length === 0) {
+      // Render the empty-state message based on what was asked for, so
+      // "no FKs on these specific tables" reads differently from "no
+      // FKs anywhere in the DB".
+      const subject = filter
+        ? filter.length === 1
+          ? filter[0]
+          : `${filter.length} tables`
+        : r.db;
       return toolOk(
-        table ? `No foreign keys on ${table}` : `No foreign keys in ${r.db}`,
-        { database: r.db, table: table ?? null, foreignKeys: [] },
+        filter ? `No foreign keys on ${subject}` : `No foreign keys in ${r.db}`,
+        {
+          database: r.db,
+          tables: filter ?? null,
+          foreignKeys: [],
+        },
       );
     }
 
@@ -155,7 +347,7 @@ export const handleGetForeignKeys = toolHandler(
 
     return toolOk(lines.join("\n") + `\n\n${fks.length} foreign key(s)`, {
       database: r.db,
-      table: table ?? null,
+      tables: filter ?? null,
       foreignKeys: fks,
     });
   },
@@ -166,16 +358,24 @@ export const handleGetIndexes = toolHandler(
   async ({
     connection,
     table,
+    tables: tablesArg,
     database,
   }: {
     connection: string;
     table?: string | undefined;
+    tables?: string[] | undefined;
     database?: string | undefined;
   }) => {
     const r = resolveDb(connection, database);
     if ("error" in r) return r.error;
 
-    const stats = await getIndexStats(connection, r.db, table);
+    // Same merge pattern as get_foreign_keys.
+    const filterSet = new Set<string>();
+    if (table) filterSet.add(table);
+    if (tablesArg) for (const t of tablesArg) filterSet.add(t);
+    const filter = filterSet.size > 0 ? [...filterSet] : undefined;
+
+    const stats = await getIndexStats(connection, r.db, filter);
     if (stats.length === 0) {
       return toolOk("No indexes found", {
         database: r.db,

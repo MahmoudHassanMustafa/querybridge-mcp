@@ -187,19 +187,31 @@ describe("describeTableColumns + showIndexes", () => {
 });
 
 describe("getForeignKeys", () => {
-  it("filters by table when provided", async () => {
+  it("filters by single-element tables array", async () => {
     const runner = new MockRunner().whenSql(
       /information_schema\.KEY_COLUMN_USAGE/s,
       [],
     );
     registerMockConnection(CONN, runner);
-    await getForeignKeys(CONN, "shop", "orders");
+    await getForeignKeys(CONN, "shop", ["orders"]);
     const call = runner.calls()[0];
-    expect(call?.sql).toContain("kcu.TABLE_NAME = ?");
+    expect(call?.sql).toContain("kcu.TABLE_NAME IN (?)");
     expect(call?.params).toEqual(["shop", "orders"]);
   });
 
-  it("returns all FKs when table is omitted", async () => {
+  it("emits one ? per table for a multi-table filter", async () => {
+    const runner = new MockRunner().whenSql(
+      /information_schema\.KEY_COLUMN_USAGE/s,
+      [],
+    );
+    registerMockConnection(CONN, runner);
+    await getForeignKeys(CONN, "shop", ["orders", "users"]);
+    const call = runner.calls()[0];
+    expect(call?.sql).toContain("kcu.TABLE_NAME IN (?, ?)");
+    expect(call?.params).toEqual(["shop", "orders", "users"]);
+  });
+
+  it("returns all FKs when no filter is given", async () => {
     const runner = new MockRunner().whenSql(
       /information_schema\.KEY_COLUMN_USAGE/s,
       [],
@@ -207,13 +219,13 @@ describe("getForeignKeys", () => {
     registerMockConnection(CONN, runner);
     await getForeignKeys(CONN, "shop");
     const call = runner.calls()[0];
-    expect(call?.sql).not.toContain("kcu.TABLE_NAME = ?");
+    expect(call?.sql).not.toContain("kcu.TABLE_NAME IN");
     expect(call?.params).toEqual(["shop"]);
   });
 });
 
 describe("getIndexStats", () => {
-  it("returns rows + scopes by db (and optionally table)", async () => {
+  it("returns rows + scopes by db with TABLE_NAME IN filter", async () => {
     const runner = new MockRunner().whenSql(/information_schema\.STATISTICS/s, [
       {
         TABLE_NAME: "users",
@@ -226,8 +238,9 @@ describe("getIndexStats", () => {
       },
     ]);
     registerMockConnection(CONN, runner);
-    const rows = await getIndexStats(CONN, "shop", "users");
+    const rows = await getIndexStats(CONN, "shop", ["users"]);
     expect(rows).toHaveLength(1);
+    expect(runner.calls()[0]?.sql).toContain("TABLE_NAME IN (?)");
     expect(runner.calls()[0]?.params).toEqual(["shop", "users"]);
   });
 });

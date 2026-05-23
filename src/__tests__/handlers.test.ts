@@ -173,6 +173,130 @@ describe("handleDescribeTable", () => {
     expect(ok.text).toContain("## Indexes");
     expect(ok.text).toContain("CREATE TABLE users (id INT)");
   });
+
+  it("refuses when neither table nor tables is provided", async () => {
+    registerWithConfig(new MockRunner());
+    const r = await handleDescribeTable({ connection: CONN });
+    expect("isError" in r && r.isError).toBe(true);
+    expect((r.structuredContent as { code: string }).code).toBe(
+      "DESCRIBE_TABLE_NO_TARGET",
+    );
+  });
+
+  it("`tables: [...]` returns the array-shaped response with per-table entries", async () => {
+    // Two tables. Each one needs DESCRIBE + SHOW CREATE TABLE + SHOW INDEX
+    // responses — register generic patterns since the mock matches by regex.
+    const runner = new MockRunner()
+      .whenSql(/^DESCRIBE/i, [
+        {
+          Field: "id",
+          Type: "int",
+          Null: "NO",
+          Key: "PRI",
+          Default: null,
+          Extra: "",
+        },
+      ])
+      .whenSql(/^SHOW CREATE TABLE/i, [
+        { Table: "x", "Create Table": "CREATE TABLE x (id INT)" },
+      ])
+      .whenSql(/^SHOW INDEX/i, []);
+    registerWithConfig(runner);
+
+    const r = await handleDescribeTable({
+      connection: CONN,
+      tables: ["users", "orders"],
+    });
+    expect("isError" in r && r.isError).toBeFalsy();
+    const sc = (
+      r as {
+        structuredContent: {
+          results: Array<{ table: string; isView: boolean }>;
+        };
+      }
+    ).structuredContent;
+    expect(sc.results).toHaveLength(2);
+    expect(sc.results.map((res) => res.table)).toEqual(["users", "orders"]);
+    expect(sc.results.every((res) => res.isView === false)).toBe(true);
+    // Rendered text should include both table headers.
+    expect(
+      (r as { content: Array<{ text: string }> }).content[0]?.text,
+    ).toContain("## `users`");
+    expect(
+      (r as { content: Array<{ text: string }> }).content[0]?.text,
+    ).toContain("## `orders`");
+  });
+
+  it("`tables: [...]` flags views in the batch with isView: true rather than failing the whole call", async () => {
+    const runner = new MockRunner()
+      .whenSql(/^DESCRIBE/i, [
+        {
+          Field: "id",
+          Type: "int",
+          Null: "NO",
+          Key: "",
+          Default: null,
+          Extra: "",
+        },
+      ])
+      .whenSql(/^SHOW CREATE TABLE/i, [
+        // The view returns Create View, not Create Table — handler should
+        // detect this and mark isView=true in the result for that entry.
+        { View: "v1", "Create View": "CREATE VIEW v1 AS SELECT 1" },
+      ]);
+    registerWithConfig(runner);
+    const r = await handleDescribeTable({ connection: CONN, tables: ["v1"] });
+    expect("isError" in r && r.isError).toBeFalsy();
+    const sc = (
+      r as {
+        structuredContent: {
+          results: Array<{ table: string; isView: boolean }>;
+        };
+      }
+    ).structuredContent;
+    expect(sc.results[0]?.isView).toBe(true);
+    // Header marks the view inline so the LLM sees the issue.
+    expect(
+      (r as { content: Array<{ text: string }> }).content[0]?.text,
+    ).toMatch(/VIEW.*describe_view/);
+  });
+});
+
+describe("handleGetDdl — bulk mode", () => {
+  it("refuses when neither table nor tables is provided", async () => {
+    registerWithConfig(new MockRunner());
+    const r = await (
+      await import("../tools/schema/handlers.js")
+    ).handleGetDdl({ connection: CONN });
+    expect("isError" in r && r.isError).toBe(true);
+    expect((r.structuredContent as { code: string }).code).toBe(
+      "GET_DDL_NO_TARGET",
+    );
+  });
+
+  it("`tables: [...]` returns concatenated DDL with per-table headers + structured results array", async () => {
+    const runner = new MockRunner().whenSql(/^SHOW CREATE TABLE/i, [
+      { Table: "x", "Create Table": "CREATE TABLE x (id INT)" },
+    ]);
+    registerWithConfig(runner);
+    const r = await (
+      await import("../tools/schema/handlers.js")
+    ).handleGetDdl({ connection: CONN, tables: ["users", "orders"] });
+    expect("isError" in r && r.isError).toBeFalsy();
+    const sc = (
+      r as {
+        structuredContent: { results: Array<{ table: string; ddl: string }> };
+      }
+    ).structuredContent;
+    expect(sc.results).toHaveLength(2);
+    expect(sc.results[0]?.table).toBe("users");
+    expect(sc.results[1]?.table).toBe("orders");
+    // Both DDLs in the rendered text under their headers.
+    const text =
+      (r as { content: Array<{ text: string }> }).content[0]?.text ?? "";
+    expect(text).toContain("-- ── users ──");
+    expect(text).toContain("-- ── orders ──");
+  });
 });
 
 describe("handleGetForeignKeys", () => {
@@ -208,6 +332,43 @@ describe("handleGetForeignKeys", () => {
     expect(r.text).toMatch(/orders\.user_id -> users\.id/);
     expect(r.text).toMatch(/ON UPDATE RESTRICT/);
     expect(r.text).toMatch(/ON DELETE CASCADE/);
+  });
+
+  it("accepts the new `tables: []` filter (single table)", async () => {
+    const runner = new MockRunner().whenSql(/KEY_COLUMN_USAGE/s, []);
+    registerWithConfig(runner);
+    const r = asOk(
+      await handleGetForeignKeys({ connection: CONN, tables: ["orders"] }),
+    );
+    expect(r.text).toBe("No foreign keys on orders");
+    expect(runner.calls()[0]?.sql).toContain("kcu.TABLE_NAME IN (?)");
+    expect(runner.calls()[0]?.params).toEqual(["shop", "orders"]);
+  });
+
+  it("accepts the new `tables: []` filter (multi-table) with '<n> tables' phrasing", async () => {
+    const runner = new MockRunner().whenSql(/KEY_COLUMN_USAGE/s, []);
+    registerWithConfig(runner);
+    const r = asOk(
+      await handleGetForeignKeys({
+        connection: CONN,
+        tables: ["orders", "users"],
+      }),
+    );
+    expect(r.text).toBe("No foreign keys on 2 tables");
+    expect(runner.calls()[0]?.sql).toContain("kcu.TABLE_NAME IN (?, ?)");
+    expect(runner.calls()[0]?.params).toEqual(["shop", "orders", "users"]);
+  });
+
+  it("merges legacy `table` with new `tables` and dedupes overlap", async () => {
+    const runner = new MockRunner().whenSql(/KEY_COLUMN_USAGE/s, []);
+    registerWithConfig(runner);
+    await handleGetForeignKeys({
+      connection: CONN,
+      table: "orders",
+      tables: ["orders", "users"],
+    });
+    expect(runner.calls()[0]?.sql).toContain("kcu.TABLE_NAME IN (?, ?)");
+    expect(runner.calls()[0]?.params).toEqual(["shop", "orders", "users"]);
   });
 });
 

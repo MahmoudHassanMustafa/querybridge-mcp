@@ -228,11 +228,21 @@ export interface ForeignKeyRow {
   DELETE_RULE: string;
 }
 
-/** FK list for one table or the whole schema — used by `get_foreign_keys`. */
+/**
+ * FK list for one table, a subset, or the whole schema — used by
+ * `get_foreign_keys`.
+ *
+ * Filter modes:
+ *   - undefined or empty → every FK in the database
+ *   - one or more table names → `TABLE_NAME IN (?, ?, ...)`
+ *
+ * Result rows are ordered by table then ordinal position; the tool
+ * layer renders them as `parent.col -> child.col` lines.
+ */
 export async function getForeignKeys(
   connection: string,
   db: string,
-  table?: string,
+  tables?: readonly string[],
 ): Promise<ForeignKeyRow[]> {
   let sql = `
     SELECT
@@ -247,9 +257,9 @@ export async function getForeignKeys(
     WHERE kcu.TABLE_SCHEMA = ?
       AND kcu.REFERENCED_TABLE_NAME IS NOT NULL`;
   const params: string[] = [db];
-  if (table) {
-    sql += ` AND kcu.TABLE_NAME = ?`;
-    params.push(table);
+  if (tables && tables.length > 0) {
+    sql += ` AND kcu.TABLE_NAME IN (${tables.map(() => "?").join(", ")})`;
+    params.push(...tables);
   }
   sql += ` ORDER BY kcu.TABLE_NAME, kcu.ORDINAL_POSITION`;
   return queryWithTimeout<ForeignKeyRow[]>(connection, sql, params);
@@ -267,11 +277,17 @@ export interface IndexStatsRow {
   INDEX_TYPE: string;
 }
 
-/** Per-key-part index rows — `get_indexes` regroups by `(table, index)`. */
+/**
+ * Per-key-part index rows — `get_indexes` regroups by `(table, index)`.
+ *
+ * Filter modes match `getForeignKeys`:
+ *   - undefined or empty → every index in the database
+ *   - one or more table names → `TABLE_NAME IN (?, ?, ...)`
+ */
 export async function getIndexStats(
   connection: string,
   db: string,
-  table?: string,
+  tables?: readonly string[],
 ): Promise<IndexStatsRow[]> {
   let sql = `
     SELECT
@@ -280,9 +296,9 @@ export async function getIndexStats(
     FROM information_schema.STATISTICS
     WHERE TABLE_SCHEMA = ?`;
   const params: string[] = [db];
-  if (table) {
-    sql += ` AND TABLE_NAME = ?`;
-    params.push(table);
+  if (tables && tables.length > 0) {
+    sql += ` AND TABLE_NAME IN (${tables.map(() => "?").join(", ")})`;
+    params.push(...tables);
   }
   sql += ` ORDER BY TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX`;
   return queryWithTimeout<IndexStatsRow[]>(connection, sql, params);
