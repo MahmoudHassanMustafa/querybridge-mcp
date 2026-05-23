@@ -130,11 +130,23 @@ export interface TableStatsRow {
   ENGINE: string | null;
 }
 
-/** Row counts + data/index sizes + auto-increment — for `get_table_stats`. */
+/**
+ * Row counts + data/index sizes + auto-increment — for `get_table_stats`.
+ *
+ * `tables` selects the matching mode:
+ *   - undefined or empty → all base tables in the db
+ *   - one or more names → `TABLE_NAME IN (?, ?, ...)`
+ *
+ * The list form lets the tool answer "stats for these three tables" in
+ * a single round-trip instead of N calls — the agent-facing
+ * `get_table_stats` schema exposes both `table` (singular) and
+ * `tables` (plural) for backward compatibility; here we accept the
+ * normalized array form.
+ */
 export async function getTableStats(
   connection: string,
   db: string,
-  table?: string,
+  tables?: readonly string[],
 ): Promise<TableStatsRow[]> {
   let sql = `
     SELECT
@@ -143,9 +155,9 @@ export async function getTableStats(
     FROM information_schema.TABLES
     WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE'`;
   const params: string[] = [db];
-  if (table) {
-    sql += ` AND TABLE_NAME = ?`;
-    params.push(table);
+  if (tables && tables.length > 0) {
+    sql += ` AND TABLE_NAME IN (${tables.map(() => "?").join(", ")})`;
+    params.push(...tables);
   }
   sql += ` ORDER BY DATA_LENGTH DESC`;
   return queryWithTimeout<TableStatsRow[]>(connection, sql, params);

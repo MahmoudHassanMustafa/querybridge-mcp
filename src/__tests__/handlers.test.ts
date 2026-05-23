@@ -43,11 +43,14 @@ function registerWithConfig(
 }
 
 // Tool results are { content: [{type:'text', text}], structuredContent?, isError? }
-function asOk(
-  result: Awaited<ReturnType<typeof handleListTables>>,
-): { text: string; structuredContent: Record<string, unknown> } {
+function asOk(result: Awaited<ReturnType<typeof handleListTables>>): {
+  text: string;
+  structuredContent: Record<string, unknown>;
+} {
   if ("isError" in result && result.isError) {
-    throw new Error(`expected toolOk, got toolError: ${result.content[0]?.text}`);
+    throw new Error(
+      `expected toolOk, got toolError: ${result.content[0]?.text}`,
+    );
   }
   return {
     text: result.content[0]?.text ?? "",
@@ -79,8 +82,18 @@ describe("handleListTables", () => {
   it("renders a markdown table when rows exist", async () => {
     registerWithConfig(
       new MockRunner().whenSql(/information_schema\.TABLES/s, [
-        { TABLE_NAME: "users", TABLE_ROWS: 100, ENGINE: "InnoDB", TABLE_COMMENT: "" },
-        { TABLE_NAME: "orders", TABLE_ROWS: 50, ENGINE: "InnoDB", TABLE_COMMENT: "" },
+        {
+          TABLE_NAME: "users",
+          TABLE_ROWS: 100,
+          ENGINE: "InnoDB",
+          TABLE_COMMENT: "",
+        },
+        {
+          TABLE_NAME: "orders",
+          TABLE_ROWS: 50,
+          ENGINE: "InnoDB",
+          TABLE_COMMENT: "",
+        },
       ]),
     );
     const r = asOk(await handleListTables({ connection: CONN }));
@@ -100,13 +113,22 @@ describe("handleDescribeTable", () => {
   it("returns toolError when the target is a view", async () => {
     const runner = new MockRunner()
       .whenSql(/^DESCRIBE/i, [
-        { Field: "id", Type: "int", Null: "NO", Key: "", Default: null, Extra: "" },
+        {
+          Field: "id",
+          Type: "int",
+          Null: "NO",
+          Key: "",
+          Default: null,
+          Extra: "",
+        },
       ])
       .whenSql(/^SHOW CREATE TABLE/i, [
         { View: "v1", "Create View": "CREATE VIEW v1 ..." },
       ]);
     registerWithConfig(runner);
-    const err = asErr(await handleDescribeTable({ connection: CONN, table: "v1" }));
+    const err = asErr(
+      await handleDescribeTable({ connection: CONN, table: "v1" }),
+    );
     expect(err).toMatch(/is a view, not a table/);
     expect(err).toMatch(/describe_view/);
   });
@@ -114,20 +136,39 @@ describe("handleDescribeTable", () => {
   it("renders columns + indexes + DDL for a real table", async () => {
     const runner = new MockRunner()
       .whenSql(/^DESCRIBE/i, [
-        { Field: "id", Type: "int", Null: "NO", Key: "PRI", Default: null, Extra: "auto_increment" },
+        {
+          Field: "id",
+          Type: "int",
+          Null: "NO",
+          Key: "PRI",
+          Default: null,
+          Extra: "auto_increment",
+        },
       ])
       .whenSql(/^SHOW CREATE TABLE/i, [
         { Table: "users", "Create Table": "CREATE TABLE users (id INT)" },
       ])
       .whenSql(/^SHOW INDEX/i, [
         {
-          Table: "users", Non_unique: 0, Key_name: "PRIMARY", Seq_in_index: 1,
-          Column_name: "id", Collation: "A", Cardinality: 100, Sub_part: null,
-          Packed: null, Null: "", Index_type: "BTREE", Comment: "", Index_comment: "",
+          Table: "users",
+          Non_unique: 0,
+          Key_name: "PRIMARY",
+          Seq_in_index: 1,
+          Column_name: "id",
+          Collation: "A",
+          Cardinality: 100,
+          Sub_part: null,
+          Packed: null,
+          Null: "",
+          Index_type: "BTREE",
+          Comment: "",
+          Index_comment: "",
         },
       ]);
     registerWithConfig(runner);
-    const ok = asOk(await handleDescribeTable({ connection: CONN, table: "users" }));
+    const ok = asOk(
+      await handleDescribeTable({ connection: CONN, table: "users" }),
+    );
     expect(ok.text).toContain("## Columns");
     expect(ok.text).toContain("## Indexes");
     expect(ok.text).toContain("CREATE TABLE users (id INT)");
@@ -136,9 +177,7 @@ describe("handleDescribeTable", () => {
 
 describe("handleGetForeignKeys", () => {
   it("uses 'on table' phrasing when filtered by table", async () => {
-    registerWithConfig(
-      new MockRunner().whenSql(/KEY_COLUMN_USAGE/s, []),
-    );
+    registerWithConfig(new MockRunner().whenSql(/KEY_COLUMN_USAGE/s, []));
     const r = asOk(
       await handleGetForeignKeys({ connection: CONN, table: "orders" }),
     );
@@ -146,9 +185,7 @@ describe("handleGetForeignKeys", () => {
   });
 
   it("uses 'in db' phrasing when not filtered", async () => {
-    registerWithConfig(
-      new MockRunner().whenSql(/KEY_COLUMN_USAGE/s, []),
-    );
+    registerWithConfig(new MockRunner().whenSql(/KEY_COLUMN_USAGE/s, []));
     const r = asOk(await handleGetForeignKeys({ connection: CONN }));
     expect(r.text).toBe("No foreign keys in shop");
   });
@@ -157,9 +194,13 @@ describe("handleGetForeignKeys", () => {
     registerWithConfig(
       new MockRunner().whenSql(/KEY_COLUMN_USAGE/s, [
         {
-          TABLE_NAME: "orders", COLUMN_NAME: "user_id",
-          REFERENCED_TABLE_SCHEMA: "shop", REFERENCED_TABLE_NAME: "users",
-          REFERENCED_COLUMN_NAME: "id", UPDATE_RULE: "RESTRICT", DELETE_RULE: "CASCADE",
+          TABLE_NAME: "orders",
+          COLUMN_NAME: "user_id",
+          REFERENCED_TABLE_SCHEMA: "shop",
+          REFERENCED_TABLE_NAME: "users",
+          REFERENCED_COLUMN_NAME: "id",
+          UPDATE_RULE: "RESTRICT",
+          DELETE_RULE: "CASCADE",
         },
       ]),
     );
@@ -176,25 +217,71 @@ describe("handleGetIndexes", () => {
     // the duplicate detector should flag them.
     registerWithConfig(
       new MockRunner().whenSql(/information_schema\.STATISTICS/s, [
-        { TABLE_NAME: "users", INDEX_NAME: "idx_email", NON_UNIQUE: 1, SEQ_IN_INDEX: 1, COLUMN_NAME: "email", CARDINALITY: 100, INDEX_TYPE: "BTREE" },
-        { TABLE_NAME: "users", INDEX_NAME: "idx_email_status", NON_UNIQUE: 1, SEQ_IN_INDEX: 1, COLUMN_NAME: "email", CARDINALITY: 100, INDEX_TYPE: "BTREE" },
-        { TABLE_NAME: "users", INDEX_NAME: "idx_email_status", NON_UNIQUE: 1, SEQ_IN_INDEX: 2, COLUMN_NAME: "status", CARDINALITY: 100, INDEX_TYPE: "BTREE" },
+        {
+          TABLE_NAME: "users",
+          INDEX_NAME: "idx_email",
+          NON_UNIQUE: 1,
+          SEQ_IN_INDEX: 1,
+          COLUMN_NAME: "email",
+          CARDINALITY: 100,
+          INDEX_TYPE: "BTREE",
+        },
+        {
+          TABLE_NAME: "users",
+          INDEX_NAME: "idx_email_status",
+          NON_UNIQUE: 1,
+          SEQ_IN_INDEX: 1,
+          COLUMN_NAME: "email",
+          CARDINALITY: 100,
+          INDEX_TYPE: "BTREE",
+        },
+        {
+          TABLE_NAME: "users",
+          INDEX_NAME: "idx_email_status",
+          NON_UNIQUE: 1,
+          SEQ_IN_INDEX: 2,
+          COLUMN_NAME: "status",
+          CARDINALITY: 100,
+          INDEX_TYPE: "BTREE",
+        },
       ]),
     );
-    const r = asOk(await handleGetIndexes({ connection: CONN, table: "users" }));
+    const r = asOk(
+      await handleGetIndexes({ connection: CONN, table: "users" }),
+    );
     expect(r.text).toContain("Potential Duplicates");
-    expect(r.text).toMatch(/idx_email\(email\) overlaps with idx_email_status\(email,status\)/);
+    expect(r.text).toMatch(
+      /idx_email\(email\) overlaps with idx_email_status\(email,status\)/,
+    );
     expect(r.structuredContent.duplicates).toHaveLength(1);
   });
 
   it("does NOT flag distinct leading-column indexes", async () => {
     registerWithConfig(
       new MockRunner().whenSql(/information_schema\.STATISTICS/s, [
-        { TABLE_NAME: "users", INDEX_NAME: "idx_email", NON_UNIQUE: 1, SEQ_IN_INDEX: 1, COLUMN_NAME: "email", CARDINALITY: 100, INDEX_TYPE: "BTREE" },
-        { TABLE_NAME: "users", INDEX_NAME: "idx_name", NON_UNIQUE: 1, SEQ_IN_INDEX: 1, COLUMN_NAME: "name", CARDINALITY: 100, INDEX_TYPE: "BTREE" },
+        {
+          TABLE_NAME: "users",
+          INDEX_NAME: "idx_email",
+          NON_UNIQUE: 1,
+          SEQ_IN_INDEX: 1,
+          COLUMN_NAME: "email",
+          CARDINALITY: 100,
+          INDEX_TYPE: "BTREE",
+        },
+        {
+          TABLE_NAME: "users",
+          INDEX_NAME: "idx_name",
+          NON_UNIQUE: 1,
+          SEQ_IN_INDEX: 1,
+          COLUMN_NAME: "name",
+          CARDINALITY: 100,
+          INDEX_TYPE: "BTREE",
+        },
       ]),
     );
-    const r = asOk(await handleGetIndexes({ connection: CONN, table: "users" }));
+    const r = asOk(
+      await handleGetIndexes({ connection: CONN, table: "users" }),
+    );
     expect(r.text).not.toContain("Potential Duplicates");
     expect(r.structuredContent.duplicates).toEqual([]);
   });
@@ -219,9 +306,13 @@ describe("handleGetTableStats", () => {
     registerWithConfig(
       new MockRunner().whenSql(/information_schema\.TABLES/s, [
         {
-          TABLE_NAME: "big_table", TABLE_ROWS: 1_000_000,
-          DATA_LENGTH: 5 * 1024 * 1024, INDEX_LENGTH: 1024 * 1024,
-          AUTO_INCREMENT: 999, CREATE_TIME: null, UPDATE_TIME: null,
+          TABLE_NAME: "big_table",
+          TABLE_ROWS: 1_000_000,
+          DATA_LENGTH: 5 * 1024 * 1024,
+          INDEX_LENGTH: 1024 * 1024,
+          AUTO_INCREMENT: 999,
+          CREATE_TIME: null,
+          UPDATE_TIME: null,
           ENGINE: "InnoDB",
         },
       ]),
@@ -229,6 +320,80 @@ describe("handleGetTableStats", () => {
     const r = asOk(await handleGetTableStats({ connection: CONN }));
     expect(r.text).toMatch(/5\.0 MB/); // DATA_SIZE
     expect(r.text).toMatch(/6\.0 MB/); // TOTAL = DATA + INDEX
+  });
+
+  it("no filter → does NOT add a TABLE_NAME IN clause", async () => {
+    const runner = new MockRunner().whenSql(/information_schema\.TABLES/s, []);
+    registerWithConfig(runner);
+    await handleGetTableStats({ connection: CONN });
+    const call = runner.calls()[0]!;
+    expect(call.sql).not.toMatch(/TABLE_NAME IN/);
+    expect(call.params).toEqual(["shop"]); // just the schema name
+  });
+
+  it("legacy single `table` arg → TABLE_NAME IN (?) with one binding", async () => {
+    const runner = new MockRunner().whenSql(/information_schema\.TABLES/s, []);
+    registerWithConfig(runner);
+    await handleGetTableStats({ connection: CONN, table: "users" });
+    const call = runner.calls()[0]!;
+    expect(call.sql).toMatch(/TABLE_NAME IN \(\?\)/);
+    expect(call.params).toEqual(["shop", "users"]);
+  });
+
+  it("new `tables` array → TABLE_NAME IN (?, ?, ?) with all bindings", async () => {
+    const runner = new MockRunner().whenSql(/information_schema\.TABLES/s, []);
+    registerWithConfig(runner);
+    await handleGetTableStats({
+      connection: CONN,
+      tables: ["users", "orders", "events"],
+    });
+    const call = runner.calls()[0]!;
+    expect(call.sql).toMatch(/TABLE_NAME IN \(\?, \?, \?\)/);
+    expect(call.params).toEqual(["shop", "users", "orders", "events"]);
+  });
+
+  it("merges `table` + `tables` into a deduplicated set", async () => {
+    // Belt-and-suspenders: an agent that supplies both forms should
+    // get the union, not a "you must pick one" error. Exact-match
+    // overlaps (e.g. table: "users" + tables: ["users", "orders"])
+    // dedupe so we don't issue `IN ('users', 'users', 'orders')`.
+    const runner = new MockRunner().whenSql(/information_schema\.TABLES/s, []);
+    registerWithConfig(runner);
+    await handleGetTableStats({
+      connection: CONN,
+      table: "users",
+      tables: ["users", "orders"],
+    });
+    const call = runner.calls()[0]!;
+    expect(call.sql).toMatch(/TABLE_NAME IN \(\?, \?\)/);
+    expect(call.params).toEqual(["shop", "users", "orders"]);
+  });
+
+  it("filter present but zero matches → TABLES_NOT_FOUND with list_tables suggestion", async () => {
+    registerWithConfig(
+      new MockRunner().whenSql(/information_schema\.TABLES/s, []),
+    );
+    const r = await handleGetTableStats({
+      connection: CONN,
+      tables: ["ghost_table"],
+    });
+    expect("isError" in r && r.isError).toBe(true);
+    const sc = r.structuredContent as {
+      code: string;
+      suggestions: Array<{ tool: string }>;
+    };
+    expect(sc.code).toBe("TABLES_NOT_FOUND");
+    expect(sc.suggestions[0]?.tool).toBe("list_tables");
+  });
+
+  it("no filter, empty database → returns toolOk with empty tables array (not an error)", async () => {
+    // Existing behaviour preserved: the agent asked for everything and
+    // got nothing. That's information, not a failure.
+    registerWithConfig(
+      new MockRunner().whenSql(/information_schema\.TABLES/s, []),
+    );
+    const r = asOk(await handleGetTableStats({ connection: CONN }));
+    expect(r.text).toBe("No tables found");
   });
 });
 
@@ -334,8 +499,14 @@ describe("handleListProcesses", () => {
     registerWithConfig(
       new MockRunner().whenSql(/information_schema\.PROCESSLIST/s, [
         {
-          ID: 1, USER: "root", HOST: "localhost", DB: "shop",
-          COMMAND: "Query", TIME: 5, STATE: "executing", QUERY: "SELECT 1",
+          ID: 1,
+          USER: "root",
+          HOST: "localhost",
+          DB: "shop",
+          COMMAND: "Query",
+          TIME: 5,
+          STATE: "executing",
+          QUERY: "SELECT 1",
         },
       ]),
     );
@@ -357,9 +528,7 @@ describe("handleKillQuery", () => {
   it("issues KILL QUERY by default on read-write connection", async () => {
     const runner = new MockRunner().whenSql(/^KILL QUERY/i, []);
     registerWithConfig(runner, { readonly: false });
-    const r = asOk(
-      await handleKillQuery({ connection: CONN, processId: 42 }),
-    );
+    const r = asOk(await handleKillQuery({ connection: CONN, processId: 42 }));
     expect(r.text).toBe("KILL QUERY 42 issued.");
     expect(runner.calls()[0]?.sql).toBe("KILL QUERY 42");
   });
@@ -386,7 +555,9 @@ describe("handleGetUnusedIndexes", () => {
       ]),
     );
     const r = asOk(await handleGetUnusedIndexes({ connection: CONN }));
-    expect(r.text).toContain("ALTER TABLE `shop`.`users` DROP INDEX `idx_old`;");
+    expect(r.text).toContain(
+      "ALTER TABLE `shop`.`users` DROP INDEX `idx_old`;",
+    );
     expect(r.structuredContent.dropStatements).toEqual([
       "ALTER TABLE `shop`.`users` DROP INDEX `idx_old`;",
     ]);
@@ -450,9 +621,7 @@ describe("handleUseDatabase", () => {
   it("switches the active database on success", async () => {
     registerMockConnection(
       CONN,
-      new MockRunner().whenSql(/^SHOW DATABASES LIKE/i, [
-        { Database: "shop" },
-      ]),
+      new MockRunner().whenSql(/^SHOW DATABASES LIKE/i, [{ Database: "shop" }]),
     );
     const r = asOk(
       await handleUseDatabase({ connection: CONN, database: "shop" }),
