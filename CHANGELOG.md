@@ -1,5 +1,187 @@
 # querybridge-mcp
 
+## 0.11.0
+
+### Minor Changes
+
+- b4fee38: **Diagnostics pack — 6 operator-grade observability tools.** Server snapshot, system-variable and runtime-counter inspection, lock-wait surfacing, raw InnoDB status with deadlock extraction, and a `performance_schema`-backed slow-query digest summary.
+
+  ### Tools
+
+  | Tool                 | What                                                                                                                                                                                                                                                                         |
+  | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | **`server_info`**    | One round-trip bird's-eye snapshot: version, hostname, uptime, thread counts (running / connected / max), key character set & collation, SQL mode, time zone, read-only flags. Sensible "n/a" rendering for variables the server doesn't expose (older MySQL forks).         |
+  | **`show_variables`** | `SHOW VARIABLES` with `pattern` (SQL LIKE) and `scope` (`GLOBAL` \| `SESSION`, default GLOBAL) filters.                                                                                                                                                                      |
+  | **`show_status`**    | Same shape for `SHOW STATUS` — runtime counters (`Threads_%`, `Bytes_sent`, `Slow_queries`, …).                                                                                                                                                                              |
+  | **`current_locks`**  | Joins `performance_schema.data_lock_waits` to `data_locks`, `threads`, and `events_statements_current` to surface every active blocker → blocked pair with the SQL each thread is running.                                                                                   |
+  | **`innodb_status`**  | `SHOW ENGINE INNODB STATUS` raw dump (wrapped in a fenced code block in the text body); also parses the `LATEST DETECTED DEADLOCK` section into a separate `latest_deadlock` field in `structuredContent` for easy programmatic access.                                      |
+  | **`slow_queries`**   | Top-N digests from `performance_schema.events_statements_summary_by_digest`. Sort by `total_time` (default — biggest aggregate offenders), `avg_time`, `max_time`, or `count`. Returns count, total/avg/max time in ms, and rows examined per digest. `limit` capped at 100. |
+
+  ### Privileges
+
+  `current_locks` and `slow_queries` need `SELECT` on `performance_schema`. The integration suite explicitly grants it during fixture setup; in production this is the standard grant for any monitoring user. Without it, those two tools surface MySQL's `SELECT command denied` error verbatim through the standard `toolHandler` sanitization.
+
+  ### Tests
+  - **18 new unit tests** — SQL shape verification per scope/keyword branch on `show_variables` / `show_status`, response-shape assertions on `server_info` (including the "every variable is null on old MySQL" case), `current_locks` empty-state and blocker-pair rendering, `innodb_status` deadlock extraction regex, `slow_queries` sort-by → ORDER BY mapping and 100-row LIMIT cap.
+  - **6 new integration tests** against MySQL 8.4 — real version + uptime via `server_info`, LIKE filter on `show_variables`, `Threads_%` counters from `show_status`, idle-server empty list from `current_locks`, real status dump from `innodb_status` (containing "BACKGROUND THREAD"), `slow_queries` shape assertion under `sort_by=count`.
+
+  **Total: 463 unit + 35 integration tests.** Lint clean (90 modules, 307 deps, 0 violations).
+
+  PR series note: this is the second of three PRs originally scoped (PR A: profiling, PR B: diagnostics, PR C: traverse_fk).
+
+- 7b7b883: **New tool: `generate_migration`.** Advisory-only ALTER/CREATE/DROP SQL generator. Given a `source` schema (the desired state) and a `target` schema (the DB to modify), emits the SQL statements that — **if applied to target** — would bring it in line with source. **Never executes anything**; output is text + structured content for the operator to review and run manually.
+
+  ### Safety model
+  - **Read-only at the MCP boundary** (`readOnlyHint: true` annotation). We don't open a writable connection to the target.
+  - **Destructive operations are opt-in.** Without `include_drops: true`, no DROP TABLE / DROP COLUMN / DROP INDEX / DROP FOREIGN KEY is emitted — the migration is purely additive. Without `include_destructive_changes: true`, no MODIFY COLUMN or re-creating-existing-index/FK statements.
+  - **Every destructive line is preceded by a `-- WARNING:` SQL comment** describing the specific risk (data loss, type narrowing, orphan rows after FK drop, etc.).
+  - **A full banner heads the output**: `⚠ ADVISORY MIGRATION SQL — DO NOT EXECUTE BLINDLY`, with a four-item review checklist. An operator scanning the response top-down sees the warning before any individual statement.
+
+  ### Inputs
+
+  | Input                         | Required | Notes                                                                            |
+  | ----------------------------- | -------- | -------------------------------------------------------------------------------- |
+  | `sourceConnection`            | yes      | Holds the **desired** schema (e.g. staging, canonical)                           |
+  | `sourceDatabase`              | no       | Uses the connection's active db if omitted                                       |
+  | `targetConnection`            | yes      | Holds the DB that would be modified (e.g. prod)                                  |
+  | `targetDatabase`              | no       | Uses the connection's active db if omitted                                       |
+  | `tables`                      | no       | Restrict to specific table names                                                 |
+  | `include_drops`               | no       | Default `false`. Emit DROP statements for objects in target but not source       |
+  | `include_destructive_changes` | no       | Default `false`. Emit MODIFY COLUMN + re-create-index/FK for objects that differ |
+
+  ### Phase ordering
+
+  Output is grouped into 9 phases ordered for safe sequential application:
+  1. Drop foreign keys (release FK constraints so we can modify referenced columns / drop tables)
+  2. Drop indexes
+  3. Drop columns
+  4. Modify columns (with type-narrowing warnings)
+  5. Add columns (NOT NULL columns without DEFAULT get a backfill-first warning)
+  6. Add indexes
+  7. Add foreign keys
+  8. Drop tables (after their FKs are gone)
+  9. Create new tables (CREATE TABLE from source's DDL)
+
+  ### V1 scope
+
+  | Covered                                                                     | Skipped                                                       |
+  | --------------------------------------------------------------------------- | ------------------------------------------------------------- |
+  | Table adds / drops                                                          | Views, routines, triggers, events                             |
+  | Column adds / drops / modifies                                              | Table-level attribute changes (engine, charset, partitioning) |
+  | Index adds / drops / modifies (functional, prefix, invisible all supported) | Per-column character set / collation overrides                |
+  | FK adds / drops / modifies with full ON UPDATE / ON DELETE                  | Data migrations — DDL only                                    |
+
+  PRIMARY KEY add/drop statements are **commented out** with a manual-review note: dropping or adding a PK on an existing table is rarely the right move and almost always indicates a schema redesign.
+
+  ### Backed by the existing comparison engine
+
+  `generate_migration` reuses `runSchemaComparison` (same engine as `compare_schemas` and `compare_schema_file`) for the diff. The new SQL-emission logic lives in `src/tools/migration-tools.ts`. No comparison-engine changes — the migration tool sits on top of what's already shipping.
+
+  ### Tests
+
+  6 new integration tests against MySQL 8.4 with a deliberately-diverged target schema (`migtgt` database with users.legacy_status to drop, missing users.created_at + orders.total to add, missing FK to add):
+  - `ADD COLUMN` for columns missing from target
+  - `ADD CONSTRAINT FOREIGN KEY` for missing FKs
+  - `include_drops: false` skips DROP COLUMN AND announces the skip in the output
+  - `include_drops: true` emits DROP COLUMN with a destructive warning
+  - Banner appears at the top regardless of args
+  - Identical source/target → 0 statements + "No migration statements generated"
+
+  Total: **41 integration tests** against MySQL 8.4. Build + lint clean (92 modules, 322 deps, 0 violations).
+
+- add0a0d: **`streaming_query` gains `format` argument — NDJSON (default), JSON-array, or CSV.**
+
+  The original `streaming_query` shipped NDJSON-only (one JSON object per line). The agent and operator pair both wanted CSV for spreadsheet workflows and JSON-array for jq-style downstream tooling. Adding both as a single `format` parameter, defaulting to `ndjson` so every existing call site keeps working unchanged.
+
+  ### Formats
+
+  | `format`           | Output                                                     | Best for                                                                                                                                                                                                 |
+  | ------------------ | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | `ndjson` (default) | One JSON object per line, no header, no footer             | Stream consumers; large exports — line-by-line consumption with no buffering                                                                                                                             |
+  | `json`             | A single JSON array document — `[\n  {...},\n  {...}\n]\n` | jq pipelines, JSON.parse-once consumers; zero-row case is `[]\n` (valid empty array)                                                                                                                     |
+  | `csv`              | RFC 4180 with a header row built from the first row's keys | Spreadsheets, CSV-ingesting tools. Objects/arrays in a cell are JSON-stringified; nulls render as empty cells; commas / newlines / embedded quotes trigger RFC-4180 quoting with internal-quote doubling |
+
+  ### Implementation
+
+  New `Serializer` abstraction inside `streaming-tools.ts` with three lifecycle hooks per format:
+  - `start(firstRow)` — called once with the first row; lets CSV emit a header line and JSON-array emit `[`
+  - `row(row, index)` — called for each row; emits the row bytes (and the separator between rows for JSON-array)
+  - `end(rowCount)` — called once after the last row; lets JSON-array close `]`. NDJSON / CSV use empty `end()`
+
+  When truncated (row/byte cap hit), `end()` is **skipped** for JSON-array — emitting `]` would imply a valid JSON document when the content is actually truncated. NDJSON / CSV behave identically when truncated.
+
+  ### Recommended file extensions
+
+  The tool description now recommends extension-format pairs: `.ndjson` (default), `.json` for JSON-array, `.csv` for CSV. The tool doesn't auto-suggest based on the path — the operator controls naming.
+
+  ### Structured response
+
+  `structuredContent.format` now records the format used so the agent can branch on it without re-derivation: `"ndjson" | "json" | "csv"`.
+
+  ### Tests
+
+  6 new unit tests driving `pumpStream` with a synthetic `Readable` and each serializer:
+  - NDJSON: one JSON object per line, no header, no footer; round-trips through `JSON.parse` per line
+  - JSON: single valid JSON array document; round-trips through `JSON.parse(out)` and produces a 3-element array
+  - JSON: zero-row edge case → `[]\n` (valid empty array)
+  - CSV: header row from the first row's keys
+  - CSV: RFC-4180 quoting on values with commas, newlines, embedded quotes; internal quotes doubled; objects/arrays JSON-stringified
+  - CSV: null renders as an empty cell (no quotes)
+
+  Existing 463 tests pass unchanged — the `Serializer` parameter on `pumpStream` is optional with NDJSON as the default, preserving every pre-existing call site.
+
+  **Total: 469 unit / 41 integration.** Lint clean (91 modules, 312 deps).
+
+- f4f2252: **New tool: `traverse_fk`.** Breadth-first FK navigation from a seed row.
+
+  The workflow: an agent has a row in hand and wants the connected graph around it — _"show me this order, the user who placed it, their other orders, the items on each."_ Without `traverse_fk`, that's a chain of `execute_query` calls each requiring custom JOIN SQL the agent has to write from scratch. With it: one tool call, a connected `{ nodes, edges }` graph back.
+
+  **Inputs:**
+  - `connection` (required)
+  - `database` (optional)
+  - `table` (required) — starting table
+  - `primary_key_value` (required, string or number) — V1 supports single-column primary keys only
+  - `direction` (optional, default `both`) — `"children"` follows tables that reference this row, `"parents"` follows tables this row references
+  - `depth` (optional, default 2, max 3) — how many FK hops out
+  - `max_rows_per_step` (optional, default 10, max 50) — per-table fan-out cap when expanding into children
+
+  **Output (`structuredContent`):**
+
+  ```ts
+  {
+    starting: { table, primary_key: { <col>: <value> } },
+    nodes: Array<{ id, table, primary_key, columns }>,
+    edges: Array<{ from, to, via, direction: "parent" | "child" }>,
+    depth_reached: number,
+    truncations: Array<{ table, reason: "max_rows_per_step", limit }>,
+    total_node_cap_hit: boolean,
+  }
+  ```
+
+  **Caps that keep things bounded** in a richly-connected schema:
+
+  | Cap                                      | Default | Max     |
+  | ---------------------------------------- | ------- | ------- |
+  | `depth`                                  | 2       | 3       |
+  | `max_rows_per_step`                      | 10      | 50      |
+  | Total nodes across all levels (hard cap) | —       | **200** |
+
+  Truncations are surfaced explicitly in the response so the agent knows whether to narrow or accept the graph.
+
+  **Cycle detection** uses a Set keyed by `${table}#${JSON.stringify(pk_value)}` — a row reached via multiple paths becomes one node with multiple edges.
+
+  **Error paths:**
+  - `COMPOSITE_PK_NOT_SUPPORTED` (with a `describe_table` suggestion pre-filled) — V1 only walks single-column PKs.
+  - `SEED_ROW_NOT_FOUND` (with a `sample_data` suggestion pre-filled) — the seed PK doesn't match any row.
+
+  **Tests:** 6 new unit tests (pre-flight errors, BFS single-hop in both directions, text rendering, cycle detection deduping a self-referencing path) + 4 new integration tests against MySQL 8.4 with the seeded `users`/`orders` schema (parent walk, child walk with multiple children, depth=2 both-direction cycle, seed-not-found error).
+
+  **New introspection helpers:**
+  - `getIncomingForeignKeys(connection, db, tables[])` — reverse-direction FK lookup (find every FK whose `REFERENCED_TABLE_NAME` matches), used by the child-traversal step.
+  - `getPrimaryKeyColumns(connection, db, table)` — PK column names for any table, used by the cycle-detection key and to refuse composite PKs.
+
+  Final PR of the originally-scoped three-PR series (PR A: profiling, PR B: diagnostics, PR C: this).
+
 ## 0.10.0
 
 ### Minor Changes
