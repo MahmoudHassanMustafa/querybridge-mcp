@@ -484,11 +484,12 @@ Or with custom certificates:
 
 ### Data inspection
 
-| Tool              | Description                                                                                                                                                                                            |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `get_table_stats` | Row counts, data/index sizes, timestamps. Three modes: `table` for one, `tables: [...]` for a subset in one call, or omit both for every table (the "which tables are huge?" mode)                     |
-| `sample_data`     | Preview rows from a table (default: 5 rows)                                                                                                                                                            |
-| `column_stats`    | Per-column profile — null %, distinct count, min/max/avg, optional top-N most common values. One combined-aggregation query per call; type-aware metric selection (no AVG on text, no MIN/MAX on BLOB) |
+| Tool              | Description                                                                                                                                                                                                                                                                           |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `get_table_stats` | Row counts, data/index sizes, timestamps. Three modes: `table` for one, `tables: [...]` for a subset in one call, or omit both for every table (the "which tables are huge?" mode)                                                                                                    |
+| `sample_data`     | Preview rows from a table (default: 5 rows)                                                                                                                                                                                                                                           |
+| `column_stats`    | Per-column profile — null %, distinct count, min/max/avg, optional top-N most common values. One combined-aggregation query per call; type-aware metric selection (no AVG on text, no MIN/MAX on BLOB)                                                                                |
+| `traverse_fk`     | Walk FK relationships outward from a seed row (`table`, `primary_key_value`). Returns a cycle-detected `{ nodes, edges }` graph. Direction `children` / `parents` / `both`; bounded by depth (max 3), per-step row cap (max 50), and a 200-node total cap. V1: single-column PKs only |
 
 ### Stored routines and programmability
 
@@ -605,6 +606,7 @@ querybridge-mcp/
       query-tools.ts      execute_query, explain_query
       streaming-tools.ts  streaming_query
       data-tools.ts       sample_data, get_table_stats, column_stats
+      traverse-tools.ts   traverse_fk
       routines/           list_routines, get_routine_ddl, list_triggers, get_trigger_ddl, list_events, get_event_ddl
       erd-tool.ts         generate_erd
       admin-tools.ts      list_processes, kill_query, get_unused_indexes, get_charset_collation

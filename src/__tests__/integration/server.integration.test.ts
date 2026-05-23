@@ -835,3 +835,90 @@ describe("diagnostics pack — end-to-end against MySQL", () => {
     expect(Array.isArray(sc.queries)).toBe(true);
   });
 });
+
+// ── traverse_fk against the real users/orders schema ───────────────
+
+import { handleTraverseFk } from "../../tools/traverse-tools.js";
+
+describe("traverse_fk — end-to-end against MySQL", () => {
+  const NAME = "ro_trav";
+
+  beforeAll(async () => {
+    await initConnection({ ...baseConfig, name: NAME, readonly: true });
+  }, CONTAINER_START_TIMEOUT_MS);
+
+  it("from an order, follows the user_id FK to the parent user", async () => {
+    const r = await handleTraverseFk({
+      connection: NAME,
+      database: "testdb",
+      table: "orders",
+      primary_key_value: 1, // (user_id=1, total=99.99) per the seed
+      depth: 1,
+      direction: "parents",
+    });
+    expect("isError" in r && r.isError).toBeFalsy();
+    const sc = r.structuredContent as {
+      nodes: Array<{ id: string; table: string }>;
+      edges: Array<{ via: string; direction: string }>;
+    };
+    expect(sc.nodes.map((n) => n.table).sort()).toEqual(["orders", "users"]);
+    expect(sc.edges).toHaveLength(1);
+    expect(sc.edges[0]?.direction).toBe("parent");
+    expect(sc.edges[0]?.via).toContain("orders.user_id");
+    expect(sc.edges[0]?.via).toContain("users.id");
+  });
+
+  it("from a user, follows incoming FKs to find their orders", async () => {
+    const r = await handleTraverseFk({
+      connection: NAME,
+      database: "testdb",
+      table: "users",
+      primary_key_value: 1, // alice@example.com, has 2 orders per the seed
+      depth: 1,
+      direction: "children",
+    });
+    const sc = r.structuredContent as {
+      nodes: Array<{ id: string; table: string }>;
+      edges: Array<unknown>;
+    };
+    // 1 seed user + 2 child orders = 3 unique rows.
+    expect(sc.nodes).toHaveLength(3);
+    expect(sc.nodes.filter((n) => n.table === "orders")).toHaveLength(2);
+    expect(sc.edges).toHaveLength(2);
+  });
+
+  it("direction='both' at depth=2 finds the user, their orders, then their other order", async () => {
+    // Starting from orders.id = 1 with depth=2 both:
+    //   Level 0: orders#1
+    //   Level 1: parents → users#1; children of orders#1 → none
+    //   Level 2: children of users#1 → orders#1 (cycle-detected), orders#2
+    //            parents of users#1 → none
+    // Expected unique nodes: orders#1, users#1, orders#2 = 3
+    const r = await handleTraverseFk({
+      connection: NAME,
+      database: "testdb",
+      table: "orders",
+      primary_key_value: 1,
+      depth: 2,
+      direction: "both",
+    });
+    const sc = r.structuredContent as {
+      nodes: Array<{ id: string; table: string }>;
+    };
+    const ids = sc.nodes.map((n) => n.id).sort();
+    expect(ids).toEqual(["orders#1", "orders#2", "users#1"]);
+  });
+
+  it("returns SEED_ROW_NOT_FOUND when the seed PK doesn't exist", async () => {
+    const r = await handleTraverseFk({
+      connection: NAME,
+      database: "testdb",
+      table: "orders",
+      primary_key_value: 99999,
+    });
+    expect("isError" in r && r.isError).toBe(true);
+    expect((r.structuredContent as { code: string }).code).toBe(
+      "SEED_ROW_NOT_FOUND",
+    );
+  });
+});

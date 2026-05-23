@@ -229,6 +229,65 @@ export interface ForeignKeyRow {
 }
 
 /**
+ * Reverse-direction FK lookup — finds every FK whose `REFERENCED_TABLE_NAME`
+ * matches one of `tables`. Used by `traverse_fk` to discover *incoming*
+ * relationships: "what child tables reference this row's primary key?".
+ *
+ * `getForeignKeys` answers the opposite question (FKs FROM this table to
+ * others). Same row shape, different WHERE clause.
+ */
+export async function getIncomingForeignKeys(
+  connection: string,
+  db: string,
+  tables: readonly string[],
+): Promise<ForeignKeyRow[]> {
+  if (tables.length === 0) return [];
+  // Build with string concatenation rather than a template literal —
+  // an Identifier interpolation in a SQL-looking template trips the
+  // local lint rule, which only whitelists CallExpression splices.
+  // Same shape `getForeignKeys` uses below.
+  let sql = `
+    SELECT
+      kcu.TABLE_NAME, kcu.COLUMN_NAME,
+      kcu.REFERENCED_TABLE_SCHEMA, kcu.REFERENCED_TABLE_NAME,
+      kcu.REFERENCED_COLUMN_NAME,
+      rc.UPDATE_RULE, rc.DELETE_RULE
+    FROM information_schema.KEY_COLUMN_USAGE kcu
+    JOIN information_schema.REFERENTIAL_CONSTRAINTS rc
+      ON kcu.CONSTRAINT_NAME = rc.CONSTRAINT_NAME
+      AND kcu.CONSTRAINT_SCHEMA = rc.CONSTRAINT_SCHEMA
+    WHERE kcu.TABLE_SCHEMA = ?
+      AND kcu.REFERENCED_TABLE_NAME IN (`;
+  sql += tables.map(() => "?").join(", ");
+  sql += `) ORDER BY kcu.TABLE_NAME, kcu.ORDINAL_POSITION`;
+  return queryWithTimeout<ForeignKeyRow[]>(connection, sql, [db, ...tables]);
+}
+
+/**
+ * Primary-key column names for a table, in key order. Empty array
+ * means the table has no PRIMARY KEY (rare but valid in MySQL — most
+ * commonly happens with views, which traverse_fk refuses anyway).
+ *
+ * Used by `traverse_fk` to identify the seed row and to render
+ * deduplicated "table#pk" identifiers in the response graph.
+ */
+export async function getPrimaryKeyColumns(
+  connection: string,
+  db: string,
+  table: string,
+): Promise<string[]> {
+  const rows = await queryWithTimeout<Array<{ COLUMN_NAME: string }>>(
+    connection,
+    `SELECT COLUMN_NAME
+     FROM information_schema.KEY_COLUMN_USAGE
+     WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND CONSTRAINT_NAME = 'PRIMARY'
+     ORDER BY ORDINAL_POSITION`,
+    [db, table],
+  );
+  return rows.map((r) => r.COLUMN_NAME);
+}
+
+/**
  * FK list for one table, a subset, or the whole schema — used by
  * `get_foreign_keys`.
  *
