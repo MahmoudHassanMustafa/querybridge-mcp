@@ -9,6 +9,7 @@ import { registerAdminTools } from "./admin-tools.js";
 import { registerCompareTools } from "./compare/index.js";
 import { registerCompareSchemaFileTool } from "./compare-schema-file.js";
 import { registerDiagnosticsTools } from "./diagnostics-tools.js";
+import { registerMigrationTools } from "./migration-tools.js";
 import { registerStreamingTools } from "./streaming-tools.js";
 import { registerTraverseTools } from "./traverse-tools.js";
 
@@ -23,6 +24,7 @@ export function registerTools(server: McpServer) {
   registerCompareTools(server);
   registerCompareSchemaFileTool(server);
   registerDiagnosticsTools(server);
+  registerMigrationTools(server);
   registerStreamingTools(server);
   registerTraverseTools(server);
 }

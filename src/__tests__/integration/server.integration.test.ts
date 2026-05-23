@@ -922,3 +922,158 @@ describe("traverse_fk — end-to-end against MySQL", () => {
     );
   });
 });
+
+// ── generate_migration against the real users/orders schema ────────
+
+import { handleGenerateMigration } from "../../tools/migration-tools.js";
+
+describe("generate_migration — end-to-end against MySQL", () => {
+  const SRC = "ro_migsrc";
+  const TGT = "rw_migtgt";
+
+  beforeAll(async () => {
+    await initConnection({ ...baseConfig, name: SRC, readonly: true });
+    await initConnection({ ...baseConfig, name: TGT, readonly: false });
+
+    // Build a divergent target schema in a separate database so we can
+    // generate real ALTER SQL between them. The "target" db will have:
+    //   - missing `created_at` column on users (additive needed)
+    //   - extra `legacy_status` column on users (drop candidate)
+    //   - missing `total` column on orders (additive needed)
+    //   - missing FK on orders (additive needed)
+    const seed = await mysql.createConnection({
+      host: container.getHost(),
+      port: container.getPort(),
+      user: "root",
+      password: container.getRootPassword(),
+      multipleStatements: true,
+    });
+    try {
+      await seed.query(`CREATE DATABASE IF NOT EXISTS migtgt;`);
+      await seed.query(`USE migtgt;`);
+      await seed.query(`
+        CREATE TABLE IF NOT EXISTS users (
+          id INT PRIMARY KEY AUTO_INCREMENT,
+          email VARCHAR(255) NOT NULL,
+          legacy_status VARCHAR(20)
+        );
+        CREATE TABLE IF NOT EXISTS orders (
+          id INT PRIMARY KEY AUTO_INCREMENT,
+          user_id INT NOT NULL
+        );
+      `);
+      await seed.query(
+        `GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, REFERENCES ON migtgt.* TO 'testuser'@'%'`,
+      );
+      await seed.query("FLUSH PRIVILEGES");
+    } finally {
+      await seed.end();
+    }
+  }, CONTAINER_START_TIMEOUT_MS);
+
+  it("emits ADD COLUMN for columns missing on the target side", async () => {
+    const r = await handleGenerateMigration({
+      sourceConnection: SRC,
+      sourceDatabase: "testdb",
+      targetConnection: TGT,
+      targetDatabase: "migtgt",
+      tables: ["users", "orders"],
+    });
+    expect("isError" in r && r.isError).toBeFalsy();
+    const text =
+      (r as { content: Array<{ text: string }> }).content[0]?.text ?? "";
+    // users.created_at is in source but not target → ADD COLUMN
+    expect(text).toMatch(
+      /ALTER TABLE `migtgt`\.`users` ADD COLUMN `created_at`/,
+    );
+    // orders.total is in source but not target → ADD COLUMN
+    expect(text).toMatch(/ALTER TABLE `migtgt`\.`orders` ADD COLUMN `total`/);
+  });
+
+  it("emits ADD FOREIGN KEY for FKs missing on the target side", async () => {
+    const r = await handleGenerateMigration({
+      sourceConnection: SRC,
+      sourceDatabase: "testdb",
+      targetConnection: TGT,
+      targetDatabase: "migtgt",
+      tables: ["orders"],
+    });
+    const text =
+      (r as { content: Array<{ text: string }> }).content[0]?.text ?? "";
+    expect(text).toMatch(
+      /ALTER TABLE `migtgt`\.`orders` ADD CONSTRAINT[\s\S]*FOREIGN KEY[\s\S]*REFERENCES `users`/,
+    );
+  });
+
+  it("does NOT emit DROP COLUMN by default (include_drops=false)", async () => {
+    const r = await handleGenerateMigration({
+      sourceConnection: SRC,
+      sourceDatabase: "testdb",
+      targetConnection: TGT,
+      targetDatabase: "migtgt",
+      tables: ["users"],
+    });
+    const text =
+      (r as { content: Array<{ text: string }> }).content[0]?.text ?? "";
+    expect(text).not.toMatch(/DROP COLUMN `legacy_status`/);
+    // …and the skip is announced.
+    expect(text).toContain("include_drops=false");
+  });
+
+  it("emits DROP COLUMN when include_drops=true, with a destructive warning", async () => {
+    const r = await handleGenerateMigration({
+      sourceConnection: SRC,
+      sourceDatabase: "testdb",
+      targetConnection: TGT,
+      targetDatabase: "migtgt",
+      tables: ["users"],
+      include_drops: true,
+    });
+    const text =
+      (r as { content: Array<{ text: string }> }).content[0]?.text ?? "";
+    expect(text).toMatch(
+      /-- WARNING: DESTRUCTIVE: column legacy_status[\s\S]*ALTER TABLE `migtgt`\.`users` DROP COLUMN `legacy_status`/,
+    );
+  });
+
+  it("ships the DO NOT EXECUTE BLINDLY banner at the top regardless of args", async () => {
+    const r = await handleGenerateMigration({
+      sourceConnection: SRC,
+      sourceDatabase: "testdb",
+      targetConnection: TGT,
+      targetDatabase: "migtgt",
+    });
+    const text =
+      (r as { content: Array<{ text: string }> }).content[0]?.text ?? "";
+    // Banner must appear in the first ~200 chars — operators see it
+    // before any individual statement when scanning the output.
+    expect(
+      text.indexOf("ADVISORY MIGRATION SQL — DO NOT EXECUTE BLINDLY"),
+    ).toBeLessThan(200);
+    expect(text).toMatch(/={80}/);
+    // Structured content records the flags so an operator can re-derive
+    // exactly what the agent asked for.
+    const sc = (
+      r as { structuredContent: { summary: Record<string, unknown> } }
+    ).structuredContent;
+    expect(sc.summary.include_drops).toBe(false);
+    expect(sc.summary.include_destructive_changes).toBe(false);
+  });
+
+  it("reports 0 statements when source and target are identical", async () => {
+    // Compare a database to itself — no diff, no statements.
+    const r = await handleGenerateMigration({
+      sourceConnection: SRC,
+      sourceDatabase: "testdb",
+      targetConnection: SRC,
+      targetDatabase: "testdb",
+    });
+    const sc = (
+      r as { structuredContent: { summary: { total_statements: number } } }
+    ).structuredContent;
+    expect(sc.summary.total_statements).toBe(0);
+    expect(
+      (r as { content: Array<{ text: string }> }).content[0]?.text,
+    ).toContain("No migration statements generated.");
+  });
+});
